@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+
+@theme {
+  --color-fundo: var(--fundo);
+  --color-card: var(--card);
+  --color-primaria: var(--primaria);
+  --color-destaque: var(--destaque);
+  --color-texto: var(--texto);
+  --color-texto-sec: var(--texto-sec);
+  --color-borda: var(--borda);
+  --color-sucesso: var(--sucesso);
+  --color-erro: var(--erro);
+
+  --color-btn-receita-bg: var(--btn-receita-bg);
+  --color-btn-receita-txt: var(--btn-receita-txt);
+  --color-btn-receita-border: var(--btn-receita-border);
+
+  --color-btn-despesa-bg: var(--btn-despesa-bg);
+  --color-btn-despesa-txt: var(--btn-despesa-txt);
+  --color-btn-despesa-border: var(--btn-despesa-border);
+}
+
+@layer base {
+  /* Opção 1: Dark Elegante (Padrão) */
+  :root {
+    --fundo: #121212;
+    --card: #1E1E2E;
+    --primaria: #BB86FC;
+    --destaque: #FFC107;
+    --texto: #E0E0E0;
+    --texto-sec: #9E9E9E;
+    --borda: #333333;
+    --sucesso: #4ade80;
+    --erro: #f87171;
+
+    --btn-receita-bg: rgba(20, 83, 45, 0.4);
+    --btn-receita-txt: #4ade80;
+    --btn-receita-border: #22c55e;
+    
+    --btn-despesa-bg: rgba(127, 29, 29, 0.4);
+    --btn-despesa-txt: #f87171;
+    --btn-despesa-border: #ef4444;
+  }
+
+  /* Opção 2: Cyber Noturno */
+  [data-theme='cyber'] {
+    --fundo: #09090B;
+    --card: #18181B;
+    --primaria: #8A2BE2;
+    --destaque: #b9a125;
+    --texto: #F4F4F5;
+    --texto-sec: #A1A1AA;
+    --borda: #27272A;
+    --sucesso: #4ade80;
+    --erro: #f87171;
+
+    --btn-receita-bg: rgba(20, 83, 45, 0.4);
+    --btn-receita-txt: #4ade80;
+    --btn-receita-border: #22c55e;
+    
+    --btn-despesa-bg: rgba(127, 29, 29, 0.4);
+    --btn-despesa-txt: #f87171;
+    --btn-despesa-border: #ef4444;
+  }
+
+  /* Opção 3: Clássico Financeiro */
+  [data-theme='classico'] {
+    --fundo: #F8F9FA;
+    --card: #FFFFFF;
+    --primaria: #1A73E8;
+    --destaque: #E8F0FE;
+    --texto: #202124;
+    --texto-sec: #5F6368;
+    --borda: #DADCE0;
+    --sucesso: #15803d;
+    --erro: #b91c1c;
+    
+    --btn-receita-bg: #dcfce7;
+    --btn-receita-txt: #166534;
+    --btn-receita-border: #15803d;
+    
+    --btn-despesa-bg: #fee2e2;
+    --btn-despesa-txt: #991b1b;
+    --btn-despesa-border: #b91c1c;
+  }
+
+  /* Opção 4: Fintech Moderna */
+  [data-theme='fintech'] {
+    --fundo: #F4F7F6;
+    --card: #FFFFFF;
+    --primaria: #00897B;
+    --destaque: #FF7043;
+    --texto: #263238;
+    --texto-sec: #78909C;
+    --borda: #CFD8DC;
+    --sucesso: #047857;
+    --erro: #be123c;
+    
+    --btn-receita-bg: #dcfce7;
+    --btn-receita-txt: #166534;
+    --btn-receita-border: #15803d;
+    
+    --btn-despesa-bg: #fee2e2;
+    --btn-despesa-txt: #991b1b;
+    --btn-despesa-border: #b91c1c;
+  }
+}
