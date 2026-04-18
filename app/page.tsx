@@ -66,6 +66,12 @@ const CORES_DISPONIVEIS = [
   "#F06292", "#64B5F6", "#A5D6A7", "#CE93D8",
 ];
 
+export const metadata = {
+  title: "Financeiro Bechelli",
+  description: "Gestor Financeiro Pessoal",
+  manifest: "/manifest.json",
+};
+
 // ─── Componente Principal ─────────────────────────────────────────────────────
 
 export default function FinanceiroBechelli() {
