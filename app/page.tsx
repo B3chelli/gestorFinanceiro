@@ -29,6 +29,17 @@ type Evento = {
   nome: string;
 };
 
+type Meta = {
+  categoriaId: string;
+  valorLimite: number;
+};
+
+type PerfilFinanceiro = {
+  nome: string;
+  respostas: Record<string, string>;
+  concluido: boolean;
+};
+
 type FiltroOrdenacao = "data_desc" | "data_asc" | "valor_desc" | "valor_asc";
 
 type Aba = "lancamentos" | "dashboard" | "relatorios" | "metas";
@@ -64,6 +75,34 @@ const CORES_DISPONIVEIS = [
   "#BB86FC", "#FFC107", "#FF7043", "#4FC3F7",
   "#81C784", "#FFD54F", "#E57373", "#4ade80",
   "#F06292", "#64B5F6", "#A5D6A7", "#CE93D8",
+];
+
+const PERGUNTAS_QUESTIONARIO = [
+  {
+    id: "objetivo",
+    pergunta: "Qual é seu principal objetivo financeiro?",
+    opcoes: ["Economizar mais", "Sair das dívidas", "Organizar os gastos", "Investir"],
+  },
+  {
+    id: "renda",
+    pergunta: "Como é sua renda mensal?",
+    opcoes: ["Até R$ 2.000", "R$ 2.000 a R$ 5.000", "R$ 5.000 a R$ 10.000", "Acima de R$ 10.000"],
+  },
+  {
+    id: "maior_gasto",
+    pergunta: "Onde você mais gasta dinheiro?",
+    opcoes: ["Alimentação", "Lazer e saídas", "Transporte", "Contas fixas"],
+  },
+  {
+    id: "estilo",
+    pergunta: "Como você se descreve financeiramente?",
+    opcoes: ["Controlado", "Impulsivo às vezes", "Desorganizado", "Estou melhorando"],
+  },
+  {
+    id: "frequencia",
+    pergunta: "Com que frequência você registra seus gastos?",
+    opcoes: ["Todo dia", "Algumas vezes por semana", "Raramente", "Nunca fiz isso antes"],
+  },
 ];
 
 // ─── Componente Principal ─────────────────────────────────────────────────────
@@ -107,6 +146,26 @@ export default function FinanceiroBechelli() {
   const [detalheValor, setDetalheValor] = useState("");
   const [detalheIsReceita, setDetalheIsReceita] = useState(false);
   const [detalheCategoriaId, setDetalheCategoriaId] = useState(categorias[0]?.id ?? "");
+
+  // Perfil e questionário
+  const [perfil, setPerfil] = useState<PerfilFinanceiro | null>(null);
+  const [questionarioAberto, setQuestionarioAberto] = useState(false);
+  const [etapaQuestionario, setEtapaQuestionario] = useState(-1);
+  const [respostasTemp, setRespostasTemp] = useState<Record<string, string>>({});
+  const [nomeTemp, setNomeTemp] = useState("");
+
+  // Metas
+  const [metas, setMetas] = useState<Meta[]>([]);
+  const [loadingIA, setLoadingIA] = useState(false);
+  const [insightsIA, setInsightsIA] = useState<string>("");
+  const [loadingInsights, setLoadingInsights] = useState(false);
+
+  // Chat IA
+  const [chatAberto, setChatAberto] = useState(false);
+  const [chatMensagens, setChatMensagens] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatFimRef = useRef<HTMLDivElement>(null);
 
   // ─── Funções de Evento ─────────────────────────────────────────────────────
 
@@ -228,6 +287,13 @@ export default function FinanceiroBechelli() {
 
     const filtro = localStorage.getItem("filtro_preferido") as FiltroOrdenacao;
     if (filtro) setCriterio(filtro);
+
+    const p = localStorage.getItem("perfil_financeiro");
+    if (p) {
+      setPerfil(JSON.parse(p));
+    } else {
+      setQuestionarioAberto(true);
+    }
 
     setIsLoaded(true);
   }, []);
@@ -476,6 +542,186 @@ export default function FinanceiroBechelli() {
   const maiorGasto = [...transacoesMes].filter(t => !t.isReceita).sort((a, b) => b.valor - a.valor)[0];
   const categoriaMaisGasta = dadosPizza.sort((a, b) => b.value - a.value)[0];
 
+  // Progresso das metas por categoria
+  const progressoMetas = metas.map(meta => {
+    const cat = getCategoria(meta.categoriaId);
+    const gasto = transacoesMes.filter(t => !t.isReceita && t.categoriaId === meta.categoriaId).reduce((a, t) => a + t.valor, 0);
+    const pct = Math.min((gasto / meta.valorLimite) * 100, 100);
+    return { meta, cat, gasto, pct };
+  });
+
+  // ─── IA: Gerar categorias e metas ─────────────────────────────────────────────
+
+const gerarSugestoesIA = async (p: PerfilFinanceiro) => {
+  
+  setLoadingIA(true);
+  try {
+    const prompt = `Você é um assistente financeiro. Com base neste perfil do usuário, sugira metas mensais de gasto para as seguintes categorias em JSON.
+
+Perfil:
+- Nome: ${p.nome}
+- Objetivo: ${p.respostas.objetivo}
+- Renda mensal: ${p.respostas.renda}
+- Maior gasto: ${p.respostas.maior_gasto}
+- Estilo financeiro: ${p.respostas.estilo}
+- Frequência de registro: ${p.respostas.frequencia}
+
+Categorias disponíveis (use exatamente esses IDs):
+${categorias.map(c => `- ${c.id}: ${c.nome}`).join("\n")}
+
+Responda APENAS com um array JSON no formato:
+[{"categoriaId": "id-da-categoria", "valorLimite": 000}]
+
+Considere a renda informada para sugerir valores realistas. Inclua apenas categorias de despesa, não inclua "receita".`;
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+        }),
+      }
+    );
+    const data = await response.json();
+
+    // 👇 TRAVA DE SEGURANÇA
+    if (!data.candidates) {
+      console.error("Resposta de Erro da API:", data);
+      alert("Erro na IA: Verifique o console ou a sua API Key.");
+      setLoadingIA(false);
+      return; 
+    }
+    // 👆 FIM DA TRAVA
+
+    const texto = data.candidates[0].content.parts[0].text;
+    const clean = texto.replace(/```json|```/g, "").trim();
+    const sugestoes: Meta[] = JSON.parse(clean);
+    setMetas(sugestoes);
+  } catch (e) {
+    console.error("Erro ao gerar sugestões:", e);
+  } finally {
+    setLoadingIA(false);
+  }
+};
+
+// ─── IA: Insights do Dashboard ────────────────────────────────────────────────
+
+const gerarInsights = async () => {
+  setLoadingInsights(true);
+  try {
+    const resumo = categorias.map(cat => {
+      const gasto = transacoes.filter(t => !t.isReceita && t.categoriaId === cat.id).reduce((a, t) => a + t.valor, 0);
+      const meta = metas.find(m => m.categoriaId === cat.id);
+      return `${cat.nome}: gasto R$${gasto.toFixed(2)}${meta ? ` / meta R$${meta.valorLimite.toFixed(2)}` : ""}`;
+    }).join("\n");
+
+    const prompt = `Você é um assistente financeiro amigável e direto. Analise os dados abaixo e dê 3 insights curtos e práticos em português, cada um em uma linha começando com um emoji relevante. Seja específico com os números.
+
+Saldo atual: R$${saldo.toFixed(2)}
+Receitas do mês: R$${receitaMes.toFixed(2)}
+Despesas do mês: R$${despesaMes.toFixed(2)}
+
+Gastos por categoria:
+${resumo}
+
+Responda apenas com os 3 insights, sem introdução nem conclusão.`;
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+        }),
+      }
+    );
+    const data = await response.json();
+    const texto = data.candidates[0].content.parts[0].text;
+    setInsightsIA(texto.trim());
+  } catch (e) {
+    console.error("Erro ao gerar insights:", e);
+  } finally {
+    setLoadingInsights(false);
+  }
+};
+
+// ─── IA: Chat ─────────────────────────────────────────────────────────────────
+
+const enviarMensagemChat = async () => {
+  if (!chatInput.trim() || chatLoading) return;
+
+  const contexto = `Você é um assistente financeiro pessoal. O usuário se chama ${perfil?.nome ?? "usuário"}.
+Dados financeiros atuais:
+- Saldo: R$${saldo.toFixed(2)}
+- Receitas do mês: R$${receitaMes.toFixed(2)}
+- Despesas do mês: R$${despesaMes.toFixed(2)}
+- Categorias e gastos: ${categorias.map(c => {
+    const g = transacoes.filter(t => !t.isReceita && t.categoriaId === c.id).reduce((a, t) => a + t.valor, 0);
+    return `${c.nome}: R$${g.toFixed(2)}`;
+  }).join(", ")}
+Responda de forma amigável, direta e em português.`;
+
+  const novaMensagem = { role: "user" as const, content: chatInput };
+  const novasMensagens = [...chatMensagens, novaMensagem];
+  setChatMensagens(novasMensagens);
+  setChatInput("");
+  setChatLoading(true);
+
+  try {
+    // Monta histórico no formato do Gemini
+    const contents = [
+      { role: "user", parts: [{ text: contexto }] },
+      { role: "model", parts: [{ text: "Entendido! Estou pronto para ajudar com suas finanças." }] },
+      ...novasMensagens.map(m => ({
+        role: m.role === "user" ? "user" : "model",
+        parts: [{ text: m.content }],
+      })),
+    ];
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents }),
+      }
+    );
+    const data = await response.json();
+    const texto = data.candidates[0].content.parts[0].text;
+    setChatMensagens([...novasMensagens, { role: "assistant", content: texto }]);
+    setTimeout(() => chatFimRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+  } catch (e) {
+    console.error("Erro no chat:", e);
+  } finally {
+    setChatLoading(false);
+  }
+};
+
+  // ─── Questionário ─────────────────────────────────────────────────────────────
+
+  const responderPergunta = (respostaId: string, resposta: string) => {
+    const novas = { ...respostasTemp, [respostaId]: resposta };
+    setRespostasTemp(novas);
+    if (etapaQuestionario < PERGUNTAS_QUESTIONARIO.length - 1) {
+      setEtapaQuestionario(etapaQuestionario + 1);
+    } else {
+      finalizarQuestionario(novas);
+    }
+  };
+
+  const finalizarQuestionario = async (respostas: Record<string, string>) => {
+    const novoPerfil: PerfilFinanceiro = {
+      nome: nomeTemp.trim() || "Usuário",
+      respostas,
+      concluido: true,
+    };
+    setPerfil(novoPerfil);
+    setQuestionarioAberto(false);
+
+    localStorage.setItem("perfil_financeiro", JSON.stringify(novoPerfil));
+
+    await gerarSugestoesIA(novoPerfil);
+  };
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -515,48 +761,54 @@ export default function FinanceiroBechelli() {
             </div>
 
             {/* Categorias */}
-            <button onClick={() => setModalCategoriasAberto(true)}
-              className="p-1.5 md:p-2 rounded-lg border border-primaria/30 hover:bg-primaria/10 transition-all active:scale-95" title="Gerenciar Categorias">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-destaque">
-                <path d="M4 6h16M4 12h8m-8 6h16" />
-              </svg>
-            </button>
+            {abaAtiva === "lancamentos" && (
+              <button onClick={() => setModalCategoriasAberto(true)}
+                className="p-1.5 md:p-2 rounded-lg border border-primaria/30 hover:bg-primaria/10 transition-all active:scale-95" title="Gerenciar Categorias">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-destaque">
+                  <path d="M4 6h16M4 12h8m-8 6h16" />
+                </svg>
+              </button>
+            )}
 
             {/* Agrupar */}
-            <button onClick={() => setModoAgrupar(!modoAgrupar)}
-              className={`p-1.5 md:p-2 rounded-lg border border-primaria/30 hover:bg-primaria/10 transition-all active:scale-95 ${modoAgrupar ? "bg-primaria/20 border-primaria" : ""}`}
-              title="Agrupar em Evento">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-destaque">
-                <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-              </svg>
-            </button>
+            {abaAtiva === "lancamentos" && (
+              <button onClick={() => setModoAgrupar(!modoAgrupar)}
+                className={`p-1.5 md:p-2 rounded-lg border border-primaria/30 hover:bg-primaria/10 transition-all active:scale-95 ${modoAgrupar ? "bg-primaria/20 border-primaria" : ""}`}
+                title="Agrupar em Evento">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-destaque">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+                </svg>
+              </button>
+            )}
           </div>
 
           {/* Filtro */}
-          <div className="relative" ref={filtroRef}>
-            <button onClick={() => setMenuFiltroAberto(!menuFiltroAberto)}
-              className={`flex items-center gap-1.5 md:gap-3 px-2 md:px-3 py-1.5 md:py-2 rounded-lg border border-primaria/30 transition-all active:scale-95 ${menuFiltroAberto ? "bg-primaria/20 border-primaria" : "hover:bg-primaria/10"}`}>
-              <span className="text-xs md:text-sm text-texto">{OPCOES_FILTRO.find((f) => f.id === criterio)?.nome}</span>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-primaria">
-                <line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" />
-              </svg>
-            </button>
-            {menuFiltroAberto && (
-              <div className="absolute top-full right-0 mt-2 w-40 bg-card border border-borda rounded-lg shadow-2xl z-50 py-1 animate-in fade-in zoom-in duration-200">
-                <p className="px-3 py-1.5 text-[9px] font-bold text-texto-sec uppercase tracking-widest">Ordem</p>
-                {OPCOES_FILTRO.map((f) => (
-                  <button key={f.id}
-                    onClick={() => { setCriterio(f.id); localStorage.setItem("filtro_preferido", f.id); setMenuFiltroAberto(false); }}
-                    className={`w-full px-3 py-2 text-xs flex items-center justify-between transition-colors ${criterio === f.id ? "bg-fundo text-primaria font-bold" : "text-texto hover:bg-fundo/50"}`}>
-                    <span>{f.nome}</span>
-                    <div className="w-4 flex justify-end">
-                      {criterio === f.id && <div className="w-1.5 h-1.5 rounded-full bg-primaria shadow-[0_0_8px_var(--primaria)]" />}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {abaAtiva === "lancamentos" && (
+            <div className="relative" ref={filtroRef}>
+              <button onClick={() => setMenuFiltroAberto(!menuFiltroAberto)}
+                className={`flex items-center gap-1.5 md:gap-3 px-2 md:px-3 py-1.5 md:py-2 rounded-lg border border-primaria/30 transition-all active:scale-95 ${menuFiltroAberto ? "bg-primaria/20 border-primaria" : "hover:bg-primaria/10"}`}>
+                <span className="text-xs md:text-sm text-texto">{OPCOES_FILTRO.find((f) => f.id === criterio)?.nome}</span>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-primaria">
+                  <line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+              {menuFiltroAberto && (
+                <div className="absolute top-full right-0 mt-2 w-40 bg-card border border-borda rounded-lg shadow-2xl z-50 py-1 animate-in fade-in zoom-in duration-200">
+                  <p className="px-3 py-1.5 text-[9px] font-bold text-texto-sec uppercase tracking-widest">Ordem</p>
+                  {OPCOES_FILTRO.map((f) => (
+                    <button key={f.id}
+                      onClick={() => { setCriterio(f.id); localStorage.setItem("filtro_preferido", f.id); setMenuFiltroAberto(false); }}
+                      className={`w-full px-3 py-2 text-xs flex items-center justify-between transition-colors ${criterio === f.id ? "bg-fundo text-primaria font-bold" : "text-texto hover:bg-fundo/50"}`}>
+                      <span>{f.nome}</span>
+                      <div className="w-4 flex justify-end">
+                        {criterio === f.id && <div className="w-1.5 h-1.5 rounded-full bg-primaria shadow-[0_0_8px_var(--primaria)]" />}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ── CONTEÚDO POR ABA ── */}
@@ -768,6 +1020,63 @@ export default function FinanceiroBechelli() {
               </div>
             </div>
 
+            {/* Insights da IA */}
+            <div>
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-[10px] font-bold text-texto-sec uppercase tracking-widest">Insights da IA</p>
+                <button
+                  onClick={gerarInsights}
+                  disabled={loadingInsights}
+                  className="text-xs font-bold text-primaria border border-primaria/30 px-2 py-1 rounded-lg hover:bg-primaria/10 transition-all active:scale-95 disabled:opacity-40"
+                >
+                  {loadingInsights ? "Analisando..." : "Atualizar"}
+                </button>
+              </div>
+              {insightsIA ? (
+                <div className="bg-fundo rounded-xl p-4 border border-borda space-y-2">
+                  {insightsIA.split("\n").filter(Boolean).map((linha, i) => (
+                    <p key={i} className="text-sm text-texto leading-relaxed">{linha}</p>
+                  ))}
+                </div>
+              ) : (
+                <button
+                  onClick={gerarInsights}
+                  disabled={loadingInsights}
+                  className="w-full py-4 rounded-xl border border-dashed border-primaria/30 text-xs text-texto-sec hover:bg-primaria/5 transition-all disabled:opacity-40"
+                >
+                  {loadingInsights ? "Analisando seus dados..." : "✨ Gerar insights com IA"}
+                </button>
+              )}
+            </div>
+
+            {/* Barras de progresso das metas no Dashboard */}
+            {progressoMetas.length > 0 && (
+              <div>
+                <p className="text-[10px] font-bold text-texto-sec uppercase tracking-widest mb-3">Progresso das Metas</p>
+                <div className="space-y-3">
+                  {progressoMetas.map(({ meta, cat, gasto, pct }) => (
+                    <div key={meta.categoriaId}>
+                      <div className="flex justify-between mb-1">
+                        <span className="text-xs text-texto font-medium">{cat?.nome}</span>
+                        <span className={`text-xs font-bold ${pct >= 100 ? "text-erro" : pct >= 80 ? "text-destaque" : "text-sucesso"}`}>
+                          {pct.toFixed(0)}%
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 bg-fundo rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-500"
+                          style={{
+                            width: `${pct}%`,
+                            backgroundColor: pct >= 100 ? "var(--erro)" : pct >= 80 ? "var(--destaque)" : cat?.cor ?? "var(--primaria)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Gráfico de Pizza */}
             {dadosPizza.length > 0 ? (
               <div>
@@ -863,14 +1172,101 @@ export default function FinanceiroBechelli() {
 
         {/* ABA: METAS */}
         {abaAtiva === "metas" && (
-          <div className="bg-card rounded-b-xl border border-t-0 border-borda shadow-2xl overflow-hidden p-6">
-            <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-primaria/40">
-                <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>
-              </svg>
-              <p className="text-texto-sec text-sm">Metas chegam na Fase 4 com IA 🤖</p>
-              <p className="text-texto-sec/50 text-xs">Aqui você vai definir limites por categoria e receber sugestões inteligentes.</p>
+          <div className="bg-card rounded-b-xl border border-t-0 border-borda shadow-2xl overflow-hidden p-6 space-y-6">
+
+            {/* Header */}
+            <div className="flex justify-between items-center">
+              <div>
+                <h2 className="text-lg font-bold text-primaria">
+                  {perfil ? `Olá, ${perfil.nome} 👋` : "Metas"}
+                </h2>
+                <p className="text-xs text-texto-sec mt-0.5">Metas mensais por categoria</p>
+              </div>
+              <button
+                onClick={() => setChatAberto(true)}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-primaria/30 hover:bg-primaria/10 transition-all active:scale-95 text-xs font-bold text-primaria"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+                </svg>
+                Consultar IA
+              </button>
             </div>
+
+            {/* Loading IA após questionário */}
+            {loadingIA && (
+              <div className="flex flex-col items-center gap-3 py-8">
+                <div className="w-8 h-8 border-2 border-primaria border-t-transparent rounded-full animate-spin" />
+                <p className="text-xs text-texto-sec">Gerando suas metas personalizadas...</p>
+              </div>
+            )}
+
+            {/* Lista de metas */}
+            {!loadingIA && progressoMetas.length === 0 && (
+              <p className="text-center text-texto-sec text-sm italic py-8">
+                Nenhuma meta definida ainda.
+              </p>
+            )}
+
+            {!loadingIA && progressoMetas.map(({ meta, cat, gasto, pct }) => (
+              <div key={meta.categoriaId} className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: cat?.cor ?? "#666" }} />
+                    <span className="text-sm font-semibold text-texto">{cat?.nome}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className={`text-sm font-bold ${pct >= 100 ? "text-erro" : pct >= 80 ? "text-destaque" : "text-sucesso"}`}>
+                      R$ {gasto.toFixed(2)}
+                    </span>
+                    <span className="text-xs text-texto-sec"> / R$ {meta.valorLimite.toFixed(2)}</span>
+                  </div>
+                </div>
+                <div className="w-full h-2 bg-fundo rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${pct}%`,
+                      backgroundColor: pct >= 100 ? "var(--erro)" : pct >= 80 ? "var(--destaque)" : cat?.cor ?? "var(--primaria)",
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[10px] text-texto-sec">{pct.toFixed(0)}% utilizado</span>
+                  <span className="text-[10px] text-texto-sec">
+                    {pct >= 100 ? "⚠️ Limite atingido" : `R$ ${(meta.valorLimite - gasto).toFixed(2)} restantes`}
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {/* Editar metas manualmente */}
+            {!loadingIA && metas.length > 0 && (
+              <div>
+                <p className="text-[10px] font-bold text-texto-sec uppercase tracking-widest mb-3">Ajustar limites</p>
+                <div className="space-y-2">
+                  {metas.map(meta => {
+                    const cat = getCategoria(meta.categoriaId);
+                    return (
+                      <div key={meta.categoriaId} className="flex items-center gap-3 p-3 bg-fundo rounded-lg border border-borda">
+                        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: cat?.cor ?? "#666" }} />
+                        <span className="flex-1 text-sm text-texto">{cat?.nome}</span>
+                        <input
+                          type="number"
+                          value={meta.valorLimite}
+                          onChange={e => setMetas(metas.map(m =>
+                            m.categoriaId === meta.categoriaId
+                              ? { ...m, valorLimite: parseFloat(e.target.value) || 0 }
+                              : m
+                          ))}
+                          className="w-24 p-1.5 bg-card text-texto border border-primaria/50 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-destaque"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1098,6 +1494,150 @@ export default function FinanceiroBechelli() {
               </div>
             )}
             <button onClick={() => setEventoDetalheAberto(null)} className="w-full py-2.5 text-sm font-bold bg-fundo text-texto-sec border border-borda rounded-lg hover:border-primaria/50 transition-all active:scale-95">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL QUESTIONÁRIO INICIAL */}
+      {questionarioAberto && (
+        <div className="fixed inset-0 bg-black/90 z-[70] flex items-center justify-center p-4 animate-in fade-in duration-300">
+          <div className="bg-card border border-borda rounded-2xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-6">
+
+            {etapaQuestionario === -1 ? (
+              // Tela de boas-vindas
+              <>
+                <div className="text-center space-y-2">
+                  <p className="text-4xl">👋</p>
+                  <h2 className="text-xl font-black text-primaria">Bem-vindo!</h2>
+                  <p className="text-sm text-texto-sec">Vamos personalizar o app para você em menos de 1 minuto.</p>
+                </div>
+                <input
+                  className="w-full p-3 bg-fundo text-texto placeholder-texto-sec border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                  placeholder="Qual é o seu nome?"
+                  value={nomeTemp}
+                  onChange={e => setNomeTemp(e.target.value)}
+                  autoFocus
+                />
+                <button
+                  onClick={() => nomeTemp.trim() && setEtapaQuestionario(0)}
+                  disabled={!nomeTemp.trim()}
+                  className="w-full py-3 font-black bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95 disabled:opacity-40"
+                >
+                  Começar →
+                </button>
+              </>
+            ) : (
+              // Perguntas
+              <>
+                {/* Progresso */}
+                <div className="space-y-2">
+                  <div className="flex justify-between text-xs text-texto-sec">
+                    <span>Pergunta {etapaQuestionario + 1} de {PERGUNTAS_QUESTIONARIO.length}</span>
+                    <span>{Math.round(((etapaQuestionario + 1) / PERGUNTAS_QUESTIONARIO.length) * 100)}%</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-fundo rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primaria rounded-full transition-all duration-300"
+                      style={{ width: `${((etapaQuestionario + 1) / PERGUNTAS_QUESTIONARIO.length) * 100}%` }}
+                    />
+                  </div>
+                </div>
+
+                <h3 className="text-base font-bold text-texto text-center">
+                  {PERGUNTAS_QUESTIONARIO[etapaQuestionario].pergunta}
+                </h3>
+
+                <div className="space-y-2">
+                  {PERGUNTAS_QUESTIONARIO[etapaQuestionario].opcoes.map(opcao => (
+                    <button
+                      key={opcao}
+                      onClick={() => responderPergunta(PERGUNTAS_QUESTIONARIO[etapaQuestionario].id, opcao)}
+                      className="w-full py-3 px-4 text-sm font-semibold text-left rounded-lg border border-borda bg-fundo hover:border-primaria hover:bg-primaria/10 transition-all active:scale-95 text-texto"
+                    >
+                      {opcao}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* CHAT COM A IA */}
+      {chatAberto && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-end md:items-center justify-center p-0 md:p-4 animate-in fade-in duration-200">
+          <div className="bg-card border border-borda rounded-t-2xl md:rounded-2xl shadow-2xl w-full max-w-lg flex flex-col h-[70vh]">
+
+            {/* Header do chat */}
+            <div className="p-4 border-b border-borda flex justify-between items-center">
+              <div>
+                <h2 className="text-sm font-bold text-primaria">Assistente Financeiro IA</h2>
+                <p className="text-[10px] text-texto-sec">Pergunte qualquer coisa sobre suas finanças</p>
+              </div>
+              <button onClick={() => setChatAberto(false)} className="text-texto-sec hover:text-erro transition-colors active:scale-75">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+
+            {/* Mensagens */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {chatMensagens.length === 0 && (
+                <div className="text-center py-8 space-y-2">
+                  <p className="text-3xl">🤖</p>
+                  <p className="text-sm text-texto-sec">Olá! Como posso te ajudar com suas finanças hoje?</p>
+                  <div className="flex flex-col gap-2 mt-4">
+                    {["Como estão meus gastos esse mês?", "Onde posso economizar?", "Estou dentro das minhas metas?"].map(s => (
+                      <button key={s} onClick={() => setChatInput(s)}
+                        className="text-xs text-primaria border border-primaria/30 px-3 py-2 rounded-lg hover:bg-primaria/10 transition-all">
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {chatMensagens.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                    msg.role === "user"
+                      ? "bg-primaria text-fundo rounded-br-sm"
+                      : "bg-fundo border border-borda text-texto rounded-bl-sm"
+                  }`}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {chatLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-fundo border border-borda px-4 py-3 rounded-2xl rounded-bl-sm flex gap-1">
+                    <div className="w-1.5 h-1.5 bg-texto-sec rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <div className="w-1.5 h-1.5 bg-texto-sec rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <div className="w-1.5 h-1.5 bg-texto-sec rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </div>
+              )}
+              <div ref={chatFimRef} />
+            </div>
+
+            {/* Input */}
+            <div className="p-4 border-t border-borda flex gap-2">
+              <input
+                className="flex-1 p-3 bg-fundo text-texto placeholder-texto-sec border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                placeholder="Digite sua pergunta..."
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && enviarMensagemChat()}
+              />
+              <button
+                onClick={enviarMensagemChat}
+                disabled={!chatInput.trim() || chatLoading}
+                className="p-3 bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95 disabled:opacity-40"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       )}
