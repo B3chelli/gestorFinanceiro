@@ -40,6 +40,14 @@ type PerfilFinanceiro = {
   concluido: boolean;
 };
 
+type Objetivo = {
+  id: string;
+  nome: string;
+  valorAlvo: number;
+  valorGuardado: number;
+  cor: string;
+};
+
 type FiltroOrdenacao = "data_desc" | "data_asc" | "valor_desc" | "valor_asc";
 
 type Aba = "lancamentos" | "dashboard" | "relatorios" | "metas";
@@ -166,6 +174,17 @@ export default function FinanceiroBechelli() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const chatFimRef = useRef<HTMLDivElement>(null);
+
+  // Cofres e Objetivos
+  const [objetivos, setObjetivos] = useState<Objetivo[]>([]);
+  const [modalAporteAberto, setModalAporteAberto] = useState<{ cofreId: string; tipo: "guardar" | "resgatar" } | null>(null);
+  const [valorAporte, setValorAporte] = useState("");
+  const [cofreEditando, setCofreEditando] = useState<Objetivo | null>(null);
+
+  // Estados para o Modal de Novo Cofre
+  const [modalCofreAberto, setModalCofreAberto] = useState(false);
+  const [nomeNovoCofre, setNomeNovoCofre] = useState("");
+  const [valorAlvoNovoCofre, setValorAlvoNovoCofre] = useState("");
 
   // ─── Funções de Evento ─────────────────────────────────────────────────────
 
@@ -295,8 +314,32 @@ export default function FinanceiroBechelli() {
       setQuestionarioAberto(true);
     }
 
+    const obj = localStorage.getItem("meus_objetivos");
+    let listaObjetivos = obj ? JSON.parse(obj) : [];
+
+    // Verifica se a Reserva de Emergência já existe pelo ID fixo
+    const temReserva = listaObjetivos.some((o: Objetivo) => o.id === "reserva-padrao");
+    
+    if (!temReserva) {
+      const reservaPadrao: Objetivo = {
+        id: "reserva-padrao",
+        nome: "Reserva de Emergência",
+        valorAlvo: 0,
+        valorGuardado: 0,
+        cor: "#4ade80"
+      };
+      listaObjetivos = [reservaPadrao, ...listaObjetivos];
+      localStorage.setItem("meus_objetivos", JSON.stringify(listaObjetivos));
+    }
+    
+    setObjetivos(listaObjetivos);
+
     setIsLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (isLoaded) localStorage.setItem("meus_objetivos", JSON.stringify(objetivos));
+  }, [objetivos, isLoaded]);
 
   useEffect(() => {
     if (isLoaded) localStorage.setItem("meus_gastos", JSON.stringify(transacoes));
@@ -363,6 +406,64 @@ export default function FinanceiroBechelli() {
     if (timerRef.current) clearTimeout(timerRef.current);
   };
 
+  const criarCofre = () => {
+    if (!nomeNovoCofre.trim()) return;
+    
+    const valorAlvo = parseFloat(valorAlvoNovoCofre);
+    
+    const novo: Objetivo = {
+      id: Date.now().toString(),
+      nome: nomeNovoCofre.trim(),
+      valorAlvo: isNaN(valorAlvo) ? 0 : valorAlvo,
+      valorGuardado: 0,
+      cor: CORES_DISPONIVEIS[objetivos.length % CORES_DISPONIVEIS.length]
+    };
+    
+    setObjetivos([...objetivos, novo]);
+    
+    // Limpa e fecha o modal
+    setModalCofreAberto(false);
+    setNomeNovoCofre("");
+    setValorAlvoNovoCofre("");
+  };
+
+  const excluirCofre = (id: string) => {
+    if (id === "reserva-padrao") {
+      alert("A Reserva de Emergência é um pilar do seu app e não pode ser excluída.");
+      return;
+    }
+    if (confirm("Tem certeza que deseja excluir este cofre?")) {
+      setObjetivos(objetivos.filter(obj => obj.id !== id));
+    }
+  };
+
+  const salvarEdicaoCofre = () => {
+    if (!cofreEditando || !cofreEditando.nome.trim()) return;
+    setObjetivos(objetivos.map(obj => 
+      obj.id === cofreEditando.id ? cofreEditando : obj
+    ));
+    setCofreEditando(null);
+  };
+
+  const confirmarAporte = () => {
+    if (!modalAporteAberto) return;
+    const val = parseFloat(valorAporte);
+    if (isNaN(val) || val <= 0) return;
+
+    setObjetivos(objetivos.map(obj => {
+      if (obj.id === modalAporteAberto.cofreId) {
+        const novoValor = modalAporteAberto.tipo === "guardar" 
+          ? obj.valorGuardado + val 
+          : obj.valorGuardado - val;
+        // Impede que o cofre fique com valor negativo
+        return { ...obj, valorGuardado: Math.max(0, novoValor) };
+      }
+      return obj;
+    }));
+    setModalAporteAberto(null);
+    setValorAporte("");
+  };
+
   // ─── Funções de Categoria ──────────────────────────────────────────────────
 
   const adicionarCategoria = () => {
@@ -394,9 +495,10 @@ export default function FinanceiroBechelli() {
 
   // ─── Dados Derivados ───────────────────────────────────────────────────────
 
-  const saldo = transacoes.reduce(
-    (acc, t) => (t.isReceita ? acc + t.valor : acc - t.valor), 0
-  );
+  // Saldo e Cofres
+  const saldoTotal = transacoes.reduce((acc, t) => (t.isReceita ? acc + t.valor : acc - t.valor), 0);
+  const totalGuardado = objetivos.reduce((acc, obj) => acc + obj.valorGuardado, 0);
+  const saldo = saldoTotal - totalGuardado;
 
   const transacoesOrdenadas = [...transacoes].sort((a, b) => {
     if (criterio === "data_desc")  return b.id.localeCompare(a.id);
@@ -574,7 +676,7 @@ Responda APENAS com um array JSON no formato:
 
 Considere a renda informada para sugerir valores realistas. Inclua apenas categorias de despesa, não inclua "receita".`;
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+    const response = await fetch("/api/gemini",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -597,7 +699,10 @@ Considere a renda informada para sugerir valores realistas. Inclua apenas catego
     const texto = data.candidates[0].content.parts[0].text;
     const clean = texto.replace(/```json|```/g, "").trim();
     const sugestoes: Meta[] = JSON.parse(clean);
-    setMetas(sugestoes);
+    const sugestoesValidas = sugestoes.filter(sugestao => 
+      categorias.some(cat => cat.id === sugestao.categoriaId)
+    );
+    setMetas(sugestoesValidas);
   } catch (e) {
     console.error("Erro ao gerar sugestões:", e);
   } finally {
@@ -627,7 +732,7 @@ ${resumo}
 
 Responda apenas com os 3 insights, sem introdução nem conclusão.`;
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+    const response = await fetch("/api/gemini",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -679,7 +784,7 @@ Responda de forma amigável, direta e em português.`;
       })),
     ];
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+    const response = await fetch("/api/gemini",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -721,6 +826,16 @@ Responda de forma amigável, direta e em português.`;
     localStorage.setItem("perfil_financeiro", JSON.stringify(novoPerfil));
 
     await gerarSugestoesIA(novoPerfil);
+  };
+
+  const resetarPerfil = () => {
+    if (confirm("Deseja refazer o questionário inicial? Suas metas atuais serão recalculadas.")) {
+      localStorage.removeItem("perfil_financeiro"); // Apaga da memória
+      setPerfil(null); // Tira o perfil do estado
+      setEtapaQuestionario(-1); // Volta para a tela de boas-vindas
+      setQuestionarioAberto(true); // Abre o modal
+      setMetas([]); // Limpa as metas antigas
+    }
   };
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -809,6 +924,20 @@ Responda de forma amigável, direta e em português.`;
               )}
             </div>
           )}
+
+          {/* ── NOVO BOTÃO DE RESET AQUI ── */}
+          {abaAtiva === "metas" && (
+            <button
+              onClick={resetarPerfil}
+              className="text-[10px] md:text-xs font-bold text-texto-sec border border-borda px-3 py-1.5 rounded-lg hover:border-primaria hover:text-primaria transition-all active:scale-95 flex items-center gap-2"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                <path d="M3 3v5h5"/>
+              </svg>
+              Refazer Teste
+            </button>
+          )}
         </div>
 
         {/* ── CONTEÚDO POR ABA ── */}
@@ -818,9 +947,21 @@ Responda de forma amigável, direta e em português.`;
           <div className="bg-card rounded-b-xl border border-t-0 border-borda shadow-2xl overflow-hidden">
 
             {/* Saldo */}
-            <div className="p-8 text-center bg-card border-b border-borda">
-              <p className="text-texto-sec text-xs font-bold uppercase tracking-widest mb-1">Saldo Atual</p>
+            <div className="p-8 text-center bg-card border-b border-borda flex flex-col items-center">
+              <p className="text-texto-sec text-xs font-bold uppercase tracking-widest mb-1">Saldo Livre</p>
               <h2 className="text-4xl md:text-5xl font-black text-texto">R$ {saldo.toFixed(2)}</h2>
+              
+              {/* Atalho Elegante para Reserva */}
+              <button 
+                onClick={() => setModalAporteAberto({ cofreId: "reserva-padrao", tipo: "guardar" })}
+                className="mt-6 flex items-center gap-1.5 text-xs font-bold text-texto-sec hover:text-primaria transition-colors"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                Guardar na Reserva
+              </button>
             </div>
 
             {/* Formulário */}
@@ -1193,6 +1334,69 @@ Responda de forma amigável, direta e em português.`;
               </button>
             </div>
 
+            {/* ── MEUS COFRES (Objetivos) ── */}
+            <div>
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-[10px] font-bold text-texto-sec uppercase tracking-widest">Meus Cofres</p>
+                <button onClick={() => setModalCofreAberto(true)} className="text-xs font-bold text-primaria border border-primaria/30 px-2 py-1 rounded-lg hover:bg-primaria/10 transition-all">+ Novo Cofre</button>
+              </div>
+
+              <div className="space-y-4 mb-8">
+                {objetivos.length === 0 && <p className="text-center text-xs text-texto-sec italic py-2">Crie o seu primeiro cofre (Ex: Reserva de Emergência).</p>}
+                
+                {objetivos.map(obj => {
+
+                  const pct = obj.valorAlvo > 0 ? Math.min((obj.valorGuardado / obj.valorAlvo) * 100, 100) : 0;
+                  return (
+                    <div key={obj.id} className="p-4 bg-fundo border border-borda rounded-xl">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm font-bold text-texto flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: obj.cor }} />
+                          {obj.nome}
+                        </span>
+                        
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-black text-primaria">R$ {obj.valorGuardado.toFixed(2)}</span>
+                          
+                          {/* Botão Editar */}
+                          <button onClick={() => setCofreEditando(obj)} className="text-texto-sec hover:text-primaria transition-all p-1 opacity-40 hover:opacity-100">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                          </button>
+
+                          {/* Botão Excluir */}
+                          {obj.id !== "reserva-padrao" && (
+                            <button onClick={() => excluirCofre(obj.id)} className="text-texto-sec hover:text-erro transition-all p-1 opacity-40 hover:opacity-100 active:scale-75">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {obj.valorAlvo > 0 && (
+                        <>
+                          <div className="w-full h-1.5 bg-card rounded-full overflow-hidden mb-1">
+                            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: obj.cor }} />
+                          </div>
+                          <div className="flex justify-between text-[10px] text-texto-sec mb-3">
+                            <span>{pct.toFixed(1)}% guardado</span>
+                            <span>Alvo: R$ {obj.valorAlvo.toFixed(2)}</span>
+                          </div>
+                        </>
+                      )}
+
+                      <div className="flex gap-2 mt-3">
+                        <button onClick={() => setModalAporteAberto({ cofreId: obj.id, tipo: "guardar" })} className="flex-1 py-1.5 text-xs font-bold bg-sucesso/20 text-sucesso rounded hover:bg-sucesso/30 transition-colors">Guardar</button>
+                        <button onClick={() => setModalAporteAberto({ cofreId: obj.id, tipo: "resgatar" })} className="flex-1 py-1.5 text-xs font-bold bg-fundo border border-borda text-texto-sec rounded hover:border-erro hover:text-erro transition-colors" disabled={obj.valorGuardado <= 0}>Resgatar</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Loading IA após questionário */}
             {loadingIA && (
               <div className="flex flex-col items-center gap-3 py-8">
@@ -1560,6 +1764,115 @@ Responda de forma amigável, direta e em português.`;
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Guardar/Resgatar Dinheiro */}
+      {modalAporteAberto && (
+        <div className="fixed inset-0 bg-black/70 z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => { if (e.target === e.currentTarget) setModalAporteAberto(null); }}>
+          <div className="bg-card border border-borda rounded-xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4">
+            <h2 className="text-lg font-bold text-primaria">
+              {modalAporteAberto.tipo === "guardar" ? "Guardar Dinheiro" : "Resgatar Dinheiro"}
+            </h2>
+            <p className="text-xs text-texto-sec">
+              {modalAporteAberto.tipo === "guardar" ? `Saldo Livre disponível: R$ ${saldo.toFixed(2)}` : "Valor a ser retirado do cofre:"}
+            </p>
+            
+            <input 
+              type="number" 
+              className="w-full p-3 bg-fundo text-texto border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+              placeholder="Valor (R$)"
+              value={valorAporte}
+              onChange={e => setValorAporte(e.target.value)}
+              autoFocus
+            />
+
+            {/* Sugestões de Percentagem para Guardar */}
+            {modalAporteAberto.tipo === "guardar" && saldo > 0 && (
+              <div className="flex gap-2">
+                <button onClick={() => setValorAporte((saldo * 0.1).toFixed(2))} className="flex-1 py-1.5 text-xs font-bold border border-borda rounded text-texto-sec hover:border-primaria transition-colors">10% livre</button>
+                <button onClick={() => setValorAporte((saldo * 0.2).toFixed(2))} className="flex-1 py-1.5 text-xs font-bold border border-borda rounded text-texto-sec hover:border-primaria transition-colors">20% livre</button>
+                <button onClick={() => setValorAporte(saldo.toFixed(2))} className="flex-1 py-1.5 text-xs font-bold border border-borda rounded text-texto-sec hover:border-primaria transition-colors">Tudo</button>
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-2">
+              <button onClick={confirmarAporte} className="flex-1 py-3 font-bold bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95">Confirmar</button>
+              <button onClick={() => { setModalAporteAberto(null); setValorAporte(""); }} className="flex-1 py-3 font-bold bg-fundo text-texto-sec border border-borda rounded-lg hover:border-primaria/50 transition-all active:scale-95">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Novo Cofre */}
+      {modalCofreAberto && (
+        <div className="fixed inset-0 bg-black/70 z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => { if (e.target === e.currentTarget) setModalCofreAberto(false); }}>
+          <div className="bg-card border border-borda rounded-xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4">
+            <h2 className="text-lg font-bold text-primaria">Criar Novo Cofre</h2>
+            
+            <div>
+              <p className="text-xs text-texto-sec uppercase tracking-widest font-bold mb-2">Nome do Cofre</p>
+              <input 
+                className="w-full p-3 bg-fundo text-texto placeholder-texto-sec border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                placeholder="Ex: Reserva, Carro Novo"
+                value={nomeNovoCofre}
+                onChange={(e) => setNomeNovoCofre(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <p className="text-xs text-texto-sec uppercase tracking-widest font-bold mb-2">Valor Alvo (Opcional)</p>
+              <input 
+                type="number" 
+                className="w-full p-3 bg-fundo text-texto placeholder-texto-sec border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                placeholder="Ex: 5000"
+                value={valorAlvoNovoCofre}
+                onChange={(e) => setValorAlvoNovoCofre(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && criarCofre()}
+              />
+            </div>
+
+            <div className="flex gap-3 mt-2">
+              <button onClick={criarCofre} disabled={!nomeNovoCofre.trim()} className="flex-1 py-3 font-bold bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">Criar Cofre</button>
+              <button onClick={() => { setModalCofreAberto(false); setNomeNovoCofre(""); setValorAlvoNovoCofre(""); }} className="flex-1 py-3 font-bold bg-fundo text-texto-sec border border-borda rounded-lg hover:border-primaria/50 transition-all active:scale-95">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Editar Cofre */}
+      {cofreEditando && (
+        <div className="fixed inset-0 bg-black/70 z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => { if (e.target === e.currentTarget) setCofreEditando(null); }}>
+          <div className="bg-card border border-borda rounded-xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4">
+            <h2 className="text-lg font-bold text-primaria">Editar Cofre</h2>
+            
+            <div>
+              <p className="text-xs text-texto-sec uppercase tracking-widest font-bold mb-2">Nome do Cofre</p>
+              <input 
+                className="w-full p-3 bg-fundo text-texto placeholder-texto-sec border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                value={cofreEditando.nome}
+                onChange={(e) => setCofreEditando({ ...cofreEditando, nome: e.target.value })}
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <p className="text-xs text-texto-sec uppercase tracking-widest font-bold mb-2">Valor Alvo (R$)</p>
+              <input 
+                type="number" 
+                className="w-full p-3 bg-fundo text-texto placeholder-texto-sec border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                value={cofreEditando.valorAlvo || ""}
+                onChange={(e) => setCofreEditando({ ...cofreEditando, valorAlvo: parseFloat(e.target.value) || 0 })}
+                onKeyDown={e => e.key === "Enter" && salvarEdicaoCofre()}
+              />
+            </div>
+
+            <div className="flex gap-3 mt-2">
+              <button onClick={salvarEdicaoCofre} disabled={!cofreEditando.nome.trim()} className="flex-1 py-3 font-bold bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">Salvar</button>
+              <button onClick={() => setCofreEditando(null)} className="flex-1 py-3 font-bold bg-fundo text-texto-sec border border-borda rounded-lg hover:border-primaria/50 transition-all active:scale-95">Cancelar</button>
+            </div>
           </div>
         </div>
       )}
