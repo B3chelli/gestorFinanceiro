@@ -7,6 +7,9 @@ import {
   BarChart, Bar, XAxis, YAxis, LineChart, Line, CartesianGrid, Legend,
 } from "recharts";
 
+import { supabase } from '../lib/supabase'; // Ajuste o caminho se a pasta lib estiver em outro lugar
+import { User } from '@supabase/supabase-js';
+
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 type Categoria = {
@@ -130,6 +133,13 @@ export default function FinanceiroBechelli() {
   const [temaAtivo,        setTemaAtivo]        = useState("dark");
   const [abaAtiva,         setAbaAtiva]         = useState<Aba>("lancamentos");
   const [periodoRelatorio, setPeriodoRelatorio] = useState<"semanal" | "mensal" | "anual">("mensal");
+  const [usuario,          setUsuario]          = useState<User | null>(null);
+  const [email,            setEmail]            = useState("");
+  const [senha,            setSenha]            = useState("");
+  const [carregandoAuth,   setCarregandoAuth]   = useState(true);
+  const [mensagemSucesso,  setMensagemSucesso]  = useState("");
+  const [erroAuth,         setErroAuth]         = useState("");
+
 
   // Eventos
   const [eventos, setEventos] = useState<Evento[]>([]);
@@ -334,8 +344,15 @@ export default function FinanceiroBechelli() {
     
     setObjetivos(listaObjetivos);
 
+    const metasSalvas = localStorage.getItem("minhas_metas");
+    if (metasSalvas) setMetas(JSON.parse(metasSalvas));
+
     setIsLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (isLoaded) localStorage.setItem("minhas_metas", JSON.stringify(metas));
+  }, [metas, isLoaded]);
 
   useEffect(() => {
     if (isLoaded) localStorage.setItem("meus_objetivos", JSON.stringify(objetivos));
@@ -362,6 +379,101 @@ export default function FinanceiroBechelli() {
     document.addEventListener("mousedown", handleClickFora);
     return () => document.removeEventListener("mousedown", handleClickFora);
   }, []);
+
+  // Verifica se já existe um login ativo ao abrir o app
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUsuario(session?.user ?? null);
+      setCarregandoAuth(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUsuario(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const fazerLogin = async () => {
+    setErroAuth("");
+    setMensagemSucesso("");
+    const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
+    if (error) setErroAuth("Erro ao entrar. Verifique sua senha ou se já confirmou o e-mail.");
+  };
+
+  const criarConta = async () => {
+    setErroAuth("");
+    setMensagemSucesso("");
+    const { error } = await supabase.auth.signUp({ email, password: senha });
+    if (error) {
+      setErroAuth("Erro ao criar conta: " + error.message);
+    } else {
+      setMensagemSucesso("Conta criada! Enviamos um link de confirmação para o seu e-mail. Verifique a caixa de entrada (e o spam) antes de entrar.");
+    }
+  };
+
+  const fazerLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
+  const migrarDadosParaNuvem = async () => {
+    if (!usuario) return;
+
+    try {
+      // 1. Pegar dados locais
+      const transacoesLocais = JSON.parse(localStorage.getItem("transacoes") || "[]");
+      const cofresLocais = JSON.parse(localStorage.getItem("objetivos") || "[]");
+      const metasLocais = JSON.parse(localStorage.getItem("minhas_metas") || "[]");
+
+      if (transacoesLocais.length === 0 && cofresLocais.length === 0 && metasLocais.length === 0) {
+        alert("Não encontramos dados locais para migrar.");
+        return;
+      }
+
+      // 2. Preparar e Enviar Transações
+      if (transacoesLocais.length > 0) {
+        const transacoesFormatadas = transacoesLocais.map((t: any) => ({
+          user_id: usuario.id,
+          descricao: t.descricao,
+          valor: t.valor,
+          categoria: t.categoria,
+          is_receita: t.isReceita // Verifique se o nome no banco é igual ao do objeto local
+        }));
+        await supabase.from('transacoes').insert(transacoesFormatadas);
+      }
+
+      // 3. Preparar e Enviar Cofres
+      if (cofresLocais.length > 0) {
+        const cofresFormatados = cofresLocais.map((c: any) => ({
+          user_id: usuario.id,
+          nome: c.nome,
+          valor_alvo: c.valorAlvo,
+          valor_guardado: c.valorGuardado,
+          cor: c.cor
+        }));
+        await supabase.from('cofres').insert(cofresFormatados);
+      }
+
+      // 4. Preparar e Enviar Metas
+      if (metasLocais.length > 0) {
+        const metasFormatadas = metasLocais.map((m: any) => ({
+          user_id: usuario.id,
+          categoria_id: m.categoria,
+          valor_limite: m.valorLimite
+        }));
+        await supabase.from('metas').insert(metasFormatadas);
+      }
+
+      alert("Migração concluída com sucesso! Seus dados agora estão na nuvem.");
+      
+      // Opcional: Marcar como migrado para não repetir
+      localStorage.setItem("migrado_para_supabase", "true");
+      
+    } catch (error) {
+      console.error("Erro na migração:", error);
+      alert("Ocorreu um erro ao subir os dados. Verifique o console.");
+    }
+  };
 
   // ─── Funções de Negócio ────────────────────────────────────────────────────
 
@@ -838,6 +950,61 @@ Responda de forma amigável, direta e em português.`;
     }
   };
 
+  if (carregandoAuth) {
+    return <div className="min-h-screen bg-fundo flex items-center justify-center text-primaria font-bold">Carregando...</div>;
+  }
+
+  if (!usuario) {
+    return (
+      <div className="min-h-screen bg-fundo flex flex-col items-center justify-center p-4">
+        <div className="bg-card border border-borda rounded-2xl shadow-2xl w-full max-w-sm p-8 flex flex-col gap-6">
+          <div className="text-center">
+            <h1 className="text-2xl font-black text-texto mb-1">Bechelli Fin</h1>
+            <p className="text-xs text-texto-sec uppercase tracking-widest">Acesse sua carteira</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <p className="text-xs text-texto-sec font-bold mb-2">E-MAIL</p>
+              <input 
+                type="email"
+                className="w-full p-3 bg-fundo text-texto border border-primaria/30 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primaria transition-all"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div>
+              <p className="text-xs text-texto-sec font-bold mb-2">SENHA</p>
+              <input 
+                type="password"
+                className="w-full p-3 bg-fundo text-texto border border-primaria/30 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primaria transition-all"
+                value={senha}
+                onChange={(e) => setSenha(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* ── MENSAGENS DE FEEDBACK AQUI ── */}
+          {erroAuth && (
+            <div className="p-3 bg-erro/10 border border-erro/30 rounded-lg">
+              <p className="text-xs text-erro font-bold text-center">{erroAuth}</p>
+            </div>
+          )}
+          {mensagemSucesso && (
+            <div className="p-3 bg-sucesso/10 border border-sucesso/30 rounded-lg">
+              <p className="text-xs text-sucesso font-bold text-center leading-relaxed">{mensagemSucesso}</p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3 mt-2">
+            <button onClick={fazerLogin} className="w-full py-3 font-bold bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95">Entrar</button>
+            <button onClick={criarConta} className="w-full py-3 font-bold bg-transparent text-primaria border border-primaria rounded-lg hover:bg-primaria/10 transition-all active:scale-95">Criar Conta</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -939,6 +1106,13 @@ Responda de forma amigável, direta e em português.`;
             </button>
           )}
         </div>
+
+        <button 
+          onClick={migrarDadosParaNuvem}
+          className="m-4 p-3 bg-amarelo text-fundo font-black rounded-lg text-xs animate-pulse"
+        >
+          MIGRAR DADOS LOCAIS PARA A NUVEM ☁️
+        </button>
 
         {/* ── CONTEÚDO POR ABA ── */}
 
