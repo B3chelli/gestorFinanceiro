@@ -25,6 +25,7 @@ type Transacao = {
   isReceita: boolean;
   categoriaId: string;
   eventoId?: string;
+  data: string;
 };
 
 type Evento = {
@@ -413,7 +414,8 @@ export default function FinanceiroBechelli() {
         valor: t.valor,
         isReceita: t.is_receita,
         categoriaId: t.categoria,
-        eventoId: t.evento_id ?? undefined
+        eventoId: t.evento_id ?? undefined,
+        data: t.created_at
       }));
       
       setTransacoes(transacoesFormatadas);
@@ -432,8 +434,7 @@ export default function FinanceiroBechelli() {
     if (error) {
       console.error("Erro ao buscar cofres:", error);
     } else {
-      // Traduz os nomes do Banco para os nomes do React
-      const cofresFormatados = (data || []).map(c => ({
+      let cofresFormatados = (data || []).map(c => ({
         id: c.id,
         nome: c.nome,
         valorAlvo: c.valor_alvo,
@@ -441,7 +442,32 @@ export default function FinanceiroBechelli() {
         cor: c.cor
       }));
       
-      // Se o seu state se chamar "setObjetivos", troque aqui:
+      // AUTO-CRIAR RESERVA SE ESTIVER VAZIO
+      const temReserva = cofresFormatados.some(c => c.nome === "Reserva de Emergência");
+      
+      if (!temReserva && cofresFormatados.length === 0) {
+        const { data: novoCofre } = await supabase
+          .from('cofres')
+          .insert([{
+            user_id: usuario.id,
+            nome: "Reserva de Emergência",
+            valor_alvo: 0,
+            valor_guardado: 0,
+            cor: "#4ade80"
+          }])
+          .select();
+
+        if (novoCofre && novoCofre.length > 0) {
+          cofresFormatados = [{
+            id: novoCofre[0].id,
+            nome: novoCofre[0].nome,
+            valorAlvo: novoCofre[0].valor_alvo,
+            valorGuardado: novoCofre[0].valor_guardado,
+            cor: novoCofre[0].cor
+          }];
+        }
+      }
+
       setObjetivos(cofresFormatados); 
     }
   };
@@ -663,29 +689,32 @@ export default function FinanceiroBechelli() {
 
   const adicionarCategoria = () => {
     if (!novoNomeCategoria.trim()) return;
-    const nova: Categoria = {
-      id:   Date.now().toString(),
-      nome: novoNomeCategoria.trim(),
-      cor:  novaCorCategoria,
-    };
-    setCategorias([...categorias, nova]);
+    const nova: Categoria = { id: Date.now().toString(), nome: novoNomeCategoria.trim(), cor: novaCorCategoria };
+    const novaLista = [...categorias, nova];
+    
+    setCategorias(novaLista);
+    localStorage.setItem("minhas_categorias", JSON.stringify(novaLista)); // <-- Corrigido
+    
     setNovoNomeCategoria("");
     setNovaCorCategoria(CORES_DISPONIVEIS[0]);
   };
 
   const salvarEdicaoCategoria = () => {
     if (!editandoCategoria || !editandoCategoria.nome.trim()) return;
-    setCategorias(categorias.map((c) =>
-      c.id === editandoCategoria.id ? editandoCategoria : c
-    ));
+    const novaLista = categorias.map((c) => c.id === editandoCategoria.id ? editandoCategoria : c);
+    
+    setCategorias(novaLista);
+    localStorage.setItem("minhas_categorias", JSON.stringify(novaLista)); // <-- Corrigido
     setEditandoCategoria(null);
   };
 
   const excluirCategoria = (id: string) => {
-    // Impede excluir se houver transações usando essa categoria
     const emUso = transacoes.some((t) => t.categoriaId === id);
     if (emUso) return alert("Essa categoria está sendo usada em uma transação.");
-    setCategorias(categorias.filter((c) => c.id !== id));
+    const novaLista = categorias.filter((c) => c.id !== id);
+    
+    setCategorias(novaLista);
+    localStorage.setItem("minhas_categorias", JSON.stringify(novaLista)); // <-- Corrigido
   };
 
   // ─── Dados Derivados ───────────────────────────────────────────────────────
@@ -696,8 +725,8 @@ export default function FinanceiroBechelli() {
   const saldo = saldoTotal - totalGuardado;
 
   const transacoesOrdenadas = [...transacoes].sort((a, b) => {
-    if (criterio === "data_desc")  return b.id.localeCompare(a.id);
-    if (criterio === "data_asc")   return a.id.localeCompare(b.id);
+    if (criterio === "data_desc")  return new Date(b.data).getTime() - new Date(a.data).getTime();
+    if (criterio === "data_asc")   return new Date(a.data).getTime() - new Date(b.data).getTime();
     if (criterio === "valor_desc") return b.valor - a.valor;
     if (criterio === "valor_asc")  return a.valor - b.valor;
     return 0;
@@ -768,7 +797,7 @@ export default function FinanceiroBechelli() {
         dia.setDate(agora.getDate() - (6 - i));
         const label = dia.toLocaleDateString("pt-BR", { weekday: "short" });
         const diaStr = dia.toDateString();
-        const tsDia = transacoes.filter(t => new Date(parseInt(t.id)).toDateString() === diaStr);
+        const tsDia = transacoes.filter(t => new Date(t.data).toDateString() === diaStr);
         return {
           name: label,
           Receita: tsDia.filter(t => t.isReceita).reduce((a, t) => a + t.valor, 0),
@@ -782,7 +811,7 @@ export default function FinanceiroBechelli() {
         const mes = new Date(agora.getFullYear(), agora.getMonth() - (5 - i), 1);
         const label = mes.toLocaleDateString("pt-BR", { month: "short" });
         const tsMes = transacoes.filter(t => {
-          const d = new Date(parseInt(t.id));
+          const d = new Date(t.data);
           return d.getMonth() === mes.getMonth() && d.getFullYear() === mes.getFullYear();
         });
         return {
@@ -798,7 +827,7 @@ export default function FinanceiroBechelli() {
       const mes = new Date(agora.getFullYear(), i, 1);
       const label = mes.toLocaleDateString("pt-BR", { month: "short" });
       const tsMes = transacoes.filter(t => {
-        const d = new Date(parseInt(t.id));
+        const d = new Date(t.data);
         return d.getMonth() === i && d.getFullYear() === agora.getFullYear();
       });
       return {
@@ -819,7 +848,7 @@ export default function FinanceiroBechelli() {
       dia.setDate(agora.getDate() - (29 - i));
       dia.setHours(23, 59, 59, 999);
       const saldoAcumulado = transacoes
-        .filter(t => new Date(parseInt(t.id)) <= dia)
+        .filter(t => new Date(t.data) <= dia)
         .reduce((acc, t) => t.isReceita ? acc + t.valor : acc - t.valor, 0);
       return {
         name: dia.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
@@ -831,7 +860,7 @@ export default function FinanceiroBechelli() {
   // Resumo do mês atual
   const mesAtual = new Date();
   const transacoesMes = transacoes.filter(t => {
-    const d = new Date(parseInt(t.id));
+    const d = new Date(t.data);
     return d.getMonth() === mesAtual.getMonth() && d.getFullYear() === mesAtual.getFullYear();
   });
   const receitaMes = transacoesMes.filter(t => t.isReceita).reduce((a, t) => a + t.valor, 0);
