@@ -10,6 +10,8 @@ import {
 import { supabase } from '../lib/supabase'; // Ajuste o caminho se a pasta lib estiver em outro lugar
 import { User } from '@supabase/supabase-js';
 
+let inserindoCategorias = false;
+
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 type Categoria = {
@@ -440,6 +442,8 @@ export default function FinanceiroBechelli() {
           .select();
           
         if (novas) setCategorias(novas);
+
+        inserindoCategorias = false;
       }
     }
   };
