@@ -149,6 +149,7 @@ export default function FinanceiroBechelli() {
   const [modoAgrupar, setModoAgrupar] = useState(false);
   const [transacoesSelecionadas, setTransacoesSelecionadas] = useState<Set<string>>(new Set());
   const [nomeEventoAgrupamento, setNomeEventoAgrupamento] = useState("");
+  const [eventoIdAtual, setEventoIdAtual] = useState<string | undefined>(undefined);
 
   // Desfazer exclusão
   const [ultimaExcluida,   setUltimaExcluida]   = useState<Transacao | null>(null);
@@ -242,44 +243,69 @@ export default function FinanceiroBechelli() {
 
   // ─── Edição de Transação ───────────────────────────────────────────────────
 
-  const salvarEdicaoTransacao = () => {
-    if (!transacaoEditando) return;
+  const salvarEdicaoTransacao = async () => {
+    if (!transacaoEditando || !usuario) return;
+
+    // 1. Atualiza a tela na hora
     setTransacoes(transacoes.map(t =>
       t.id === transacaoEditando.id ? transacaoEditando : t
     ));
+
+    // 2. Salva na nuvem
+    const { error } = await supabase
+      .from('transacoes')
+      .update({
+        descricao: transacaoEditando.descricao,
+        valor: transacaoEditando.valor,
+        is_receita: transacaoEditando.isReceita,
+        categoria: transacaoEditando.categoriaId
+      })
+      .eq('id', transacaoEditando.id);
+
+    if (error) {
+      alert("Erro ao editar: " + error.message);
+      buscarTransacoes(); // Desfaz se der erro
+    }
+    
     setTransacaoEditando(null);
   };
 
   // ─── Adicionar transação dentro de um evento já existente ─────────────────
 
-  const adicionarDentroDoEvento = (eventoId: string) => {
+  const adicionarDentroDoEvento = async (eventoId: string) => {
     const val = parseFloat(detalheValor);
-    if (!detalheDescricao.trim() || isNaN(val) || val <= 0) return;
-    const nova: Transacao = {
-      id: Date.now().toString(),
-      descricao: detalheDescricao.trim(),
-      valor: val,
-      isReceita: detalheIsReceita,
-      categoriaId: detalheCategoriaId,
-      eventoId,
-    };
-    setTransacoes([nova, ...transacoes]);
-    setDetalheDescricao("");
-    setDetalheValor("");
-    setDetalheIsReceita(false);
+    if (!detalheDescricao.trim() || isNaN(val) || val <= 0 || !usuario) return;
+
+    const { error } = await supabase
+      .from('transacoes')
+      .insert([{
+        user_id: usuario.id,
+        descricao: detalheDescricao.trim(),
+        valor: val,
+        is_receita: detalheIsReceita,
+        categoria: detalheCategoriaId,
+        evento_id: eventoId,
+      }]);
+
+    if (error) {
+      alert("Erro ao salvar: " + error.message);
+    } else {
+      buscarTransacoes();
+      setDetalheDescricao("");
+      setDetalheValor("");
+      setDetalheIsReceita(false);
+    }
   };
 
   // Mover transação avulsa para dentro de um evento
-  const moverParaEvento = (transacaoId: string, eventoId: string) => {
-    setTransacoes(transacoes.map(t =>
-      t.id === transacaoId ? { ...t, eventoId } : t
-    ));
+  const moverParaEvento = async (transacaoId: string, eventoId: string) => {
+    setTransacoes(transacoes.map(t => t.id === transacaoId ? { ...t, eventoId } : t));
+    await supabase.from('transacoes').update({ evento_id: eventoId }).eq('id', transacaoId);
   };
 
-  const retirarDoEvento = (transacaoId: string) => {
-    setTransacoes(transacoes.map(t =>
-      t.id === transacaoId ? { ...t, eventoId: undefined } : t
-    ));
+  const retirarDoEvento = async (transacaoId: string) => {
+    setTransacoes(transacoes.map(t => t.id === transacaoId ? { ...t, eventoId: undefined } : t));
+    await supabase.from('transacoes').update({ evento_id: null }).eq('id', transacaoId);
   };
 
   // Menus dropdown
@@ -296,10 +322,7 @@ export default function FinanceiroBechelli() {
 
   // ─── Efeitos ───────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const t = localStorage.getItem("meus_gastos");
-    if (t) setTransacoes(JSON.parse(t));
-
+  useEffect(() => {    
     const c = localStorage.getItem("minhas_categorias");
     setCategorias(c ? JSON.parse(c) : CATEGORIAS_PADRAO);
 
@@ -323,62 +346,17 @@ export default function FinanceiroBechelli() {
     } else {
       setQuestionarioAberto(true);
     }
-
-    const obj = localStorage.getItem("meus_objetivos");
-    let listaObjetivos = obj ? JSON.parse(obj) : [];
-
-    // Verifica se a Reserva de Emergência já existe pelo ID fixo
-    const temReserva = listaObjetivos.some((o: Objetivo) => o.id === "reserva-padrao");
     
-    if (!temReserva) {
-      const reservaPadrao: Objetivo = {
-        id: "reserva-padrao",
-        nome: "Reserva de Emergência",
-        valorAlvo: 0,
-        valorGuardado: 0,
-        cor: "#4ade80"
-      };
-      listaObjetivos = [reservaPadrao, ...listaObjetivos];
-      localStorage.setItem("meus_objetivos", JSON.stringify(listaObjetivos));
-    }
-    
-    setObjetivos(listaObjetivos);
-
-    const metasSalvas = localStorage.getItem("minhas_metas");
-    if (metasSalvas) setMetas(JSON.parse(metasSalvas));
-
     setIsLoaded(true);
   }, []);
 
   useEffect(() => {
-    if (isLoaded) localStorage.setItem("minhas_metas", JSON.stringify(metas));
-  }, [metas, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("meus_objetivos", JSON.stringify(objetivos));
-  }, [objetivos, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("meus_gastos", JSON.stringify(transacoes));
-  }, [transacoes, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) localStorage.setItem("minhas_categorias", JSON.stringify(categorias));
-  }, [categorias, isLoaded]);
-
-  useEffect(() => {
-  if (isLoaded) localStorage.setItem("meus_eventos", JSON.stringify(eventos));
-  }, [eventos, isLoaded]);
-
-  useEffect(() => {
-    const handleClickFora = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (menuTemaRef.current  && !menuTemaRef.current.contains(t))  setMenuTemaAberto(false);
-      if (filtroRef.current    && !filtroRef.current.contains(t))    setMenuFiltroAberto(false);
-    };
-    document.addEventListener("mousedown", handleClickFora);
-    return () => document.removeEventListener("mousedown", handleClickFora);
-  }, []);
+    if (usuario) {
+      buscarTransacoes();
+      buscarCofres();
+      buscarMetas();
+    }
+  }, [usuario]);
 
   // Verifica se já existe um login ativo ao abrir o app
   useEffect(() => {
@@ -416,65 +394,80 @@ export default function FinanceiroBechelli() {
     await supabase.auth.signOut();
   };
 
-  const migrarDadosParaNuvem = async () => {
+  const buscarTransacoes = async () => {
     if (!usuario) return;
 
-    try {
-      // 1. Pegar dados locais
-      const transacoesLocais = JSON.parse(localStorage.getItem("transacoes") || "[]");
-      const cofresLocais = JSON.parse(localStorage.getItem("objetivos") || "[]");
-      const metasLocais = JSON.parse(localStorage.getItem("minhas_metas") || "[]");
+    const { data, error } = await supabase
+      .from('transacoes')
+      .select('*')
+      .eq('user_id', usuario.id)
+      .order('created_at', { ascending: false });
 
-      if (transacoesLocais.length === 0 && cofresLocais.length === 0 && metasLocais.length === 0) {
-        alert("Não encontramos dados locais para migrar.");
-        return;
-      }
-
-      // 2. Preparar e Enviar Transações
-      if (transacoesLocais.length > 0) {
-        const transacoesFormatadas = transacoesLocais.map((t: any) => ({
-          user_id: usuario.id,
-          descricao: t.descricao,
-          valor: t.valor,
-          categoria: t.categoria,
-          is_receita: t.isReceita // Verifique se o nome no banco é igual ao do objeto local
-        }));
-        await supabase.from('transacoes').insert(transacoesFormatadas);
-      }
-
-      // 3. Preparar e Enviar Cofres
-      if (cofresLocais.length > 0) {
-        const cofresFormatados = cofresLocais.map((c: any) => ({
-          user_id: usuario.id,
-          nome: c.nome,
-          valor_alvo: c.valorAlvo,
-          valor_guardado: c.valorGuardado,
-          cor: c.cor
-        }));
-        await supabase.from('cofres').insert(cofresFormatados);
-      }
-
-      // 4. Preparar e Enviar Metas
-      if (metasLocais.length > 0) {
-        const metasFormatadas = metasLocais.map((m: any) => ({
-          user_id: usuario.id,
-          categoria_id: m.categoria,
-          valor_limite: m.valorLimite
-        }));
-        await supabase.from('metas').insert(metasFormatadas);
-      }
-
-      alert("Migração concluída com sucesso! Seus dados agora estão na nuvem.");
+    if (error) {
+      console.error("Erro ao buscar transações:", error);
+    } else {
+      // Traduz os nomes do Banco para os nomes do React (DTO)
+      const transacoesFormatadas = (data || []).map(t => ({
+        id: t.id,
+        descricao: t.descricao,
+        valor: t.valor,
+        isReceita: t.is_receita,
+        categoriaId: t.categoria,
+        eventoId: t.evento_id ?? undefined
+      }));
       
-      // Opcional: Marcar como migrado para não repetir
-      localStorage.setItem("migrado_para_supabase", "true");
-      
-    } catch (error) {
-      console.error("Erro na migração:", error);
-      alert("Ocorreu um erro ao subir os dados. Verifique o console.");
+      setTransacoes(transacoesFormatadas);
     }
   };
 
+  const buscarCofres = async () => {
+    if (!usuario) return;
+
+    const { data, error } = await supabase
+      .from('cofres')
+      .select('*')
+      .eq('user_id', usuario.id)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error("Erro ao buscar cofres:", error);
+    } else {
+      // Traduz os nomes do Banco para os nomes do React
+      const cofresFormatados = (data || []).map(c => ({
+        id: c.id,
+        nome: c.nome,
+        valorAlvo: c.valor_alvo,
+        valorGuardado: c.valor_guardado,
+        cor: c.cor
+      }));
+      
+      // Se o seu state se chamar "setObjetivos", troque aqui:
+      setObjetivos(cofresFormatados); 
+    }
+  };
+
+  const buscarMetas = async () => {
+    if (!usuario) return;
+
+    const { data, error } = await supabase
+      .from('metas')
+      .select('*')
+      .eq('user_id', usuario.id);
+
+    if (error) {
+      console.error("Erro ao buscar metas:", error);
+    } else {
+      // Traduz os nomes do Banco para os nomes do React
+      const metasFormatadas = (data || []).map(m => ({
+        id: m.id,
+        categoriaId: m.categoria_id,
+        valorLimite: m.valor_limite
+      }));
+      
+      setMetas(metasFormatadas);
+    }
+  };
+  
   // ─── Funções de Negócio ────────────────────────────────────────────────────
 
   const mudarTema = (id: string) => {
@@ -486,23 +479,51 @@ export default function FinanceiroBechelli() {
     setMenuTemaAberto(false);
   };
 
-  const adicionar = () => {
+  const adicionar = async () => {
     const val = parseFloat(valor);
-    if (!descricao || isNaN(val) || val <= 0) return;
-    setTransacoes([
-      { id: Date.now().toString(), descricao, valor: val, isReceita, categoriaId },
-      ...transacoes,
-    ]);
-    setDescricao("");
-    setValor("");
+    if (!descricao || isNaN(val) || val <= 0 || !usuario) return;
+
+    // Faz o INSERT no banco de dados
+    const { error } = await supabase
+      .from('transacoes')
+      .insert([{
+        user_id: usuario.id,
+        descricao: descricao,
+        valor: val,
+        is_receita: isReceita,
+        categoria: categoriaId,
+        evento_id: eventoIdAtual ?? null,
+      }]);
+
+    if (error) {
+      alert("Erro ao salvar: " + error.message);
+    } else {
+      buscarTransacoes(); // Puxa a lista atualizada da nuvem
+      setDescricao(""); // Limpa o input como você já fazia
+      setValor("");
+    }
   };
 
-  const remover = (id: string) => {
+  const remover = async (id: string) => {
     const item = transacoes.find((t) => t.id === id);
     if (!item) return;
+
+    // 1. Mantém a sua lógica visual do balão de desfazer
     setUltimaExcluida(item);
     setExibirDesfazer(true);
-    setTransacoes(transacoes.filter((t) => t.id !== id));
+    
+    // Opcional: Atualiza a tela na hora para o usuário não ficar esperando
+    setTransacoes(transacoes.filter((t) => t.id !== id)); 
+
+    // 2. Manda o comando de exclusão para o banco
+    const { error } = await supabase
+      .from('transacoes')
+      .delete()
+      .eq('id', id);
+
+    if (error) console.error("Erro ao excluir do banco:", error);
+
+    // 3. Mantém o seu timer original do balão
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       setExibirDesfazer(false);
@@ -510,70 +531,132 @@ export default function FinanceiroBechelli() {
     }, 2600);
   };
 
-  const desfazerExclusao = () => {
-    if (!ultimaExcluida) return;
-    setTransacoes((prev) => [ultimaExcluida, ...prev]);
+  const desfazerExclusao = async () => {
+    if (!ultimaExcluida || !usuario) return;
+
+    // 1. Esconde o balão imediatamente para dar a sensação de agilidade
     setExibirDesfazer(false);
-    setUltimaExcluida(null);
+    
     if (timerRef.current) clearTimeout(timerRef.current);
+
+    // 2. Faz o INSERT de volta no Supabase usando os dados salvos na memória
+    const { error } = await supabase
+      .from('transacoes')
+      .insert([{
+        user_id: usuario.id,
+        descricao: ultimaExcluida.descricao,
+        valor: ultimaExcluida.valor,
+        is_receita: ultimaExcluida.isReceita, // Usando a nomenclatura que veio do banco
+        categoria: ultimaExcluida.categoriaId
+      }]);
+
+    if (error) {
+      alert("Erro ao restaurar: " + error.message);
+    } else {
+      // 3. Puxa a lista atualizada para garantir que o item voltou para a tela
+      buscarTransacoes();
+    }
+
+    // 4. Limpa a memória
+    setUltimaExcluida(null);
   };
 
-  const criarCofre = () => {
-    if (!nomeNovoCofre.trim()) return;
+  const criarCofre = async () => {
+    if (!nomeNovoCofre.trim() || !usuario) return;
     
     const valorAlvo = parseFloat(valorAlvoNovoCofre);
-    
-    const novo: Objetivo = {
-      id: Date.now().toString(),
-      nome: nomeNovoCofre.trim(),
-      valorAlvo: isNaN(valorAlvo) ? 0 : valorAlvo,
-      valorGuardado: 0,
-      cor: CORES_DISPONIVEIS[objetivos.length % CORES_DISPONIVEIS.length]
-    };
-    
-    setObjetivos([...objetivos, novo]);
-    
-    // Limpa e fecha o modal
-    setModalCofreAberto(false);
-    setNomeNovoCofre("");
-    setValorAlvoNovoCofre("");
+    const alvoValidado = isNaN(valorAlvo) ? 0 : valorAlvo;
+
+    const { error } = await supabase
+      .from('cofres')
+      .insert([{
+        user_id: usuario.id,
+        nome: nomeNovoCofre.trim(),
+        valor_alvo: alvoValidado,
+        valor_guardado: 0,
+        cor: CORES_DISPONIVEIS[objetivos.length % CORES_DISPONIVEIS.length]
+      }]);
+
+    if (error) {
+      alert("Erro ao criar cofre: " + error.message);
+    } else {
+      buscarCofres(); // Atualiza a lista com o UUID gerado pelo Supabase
+      setModalCofreAberto(false);
+      setNomeNovoCofre("");
+      setValorAlvoNovoCofre("");
+    }
   };
 
-  const excluirCofre = (id: string) => {
-    if (id === "reserva-padrao") {
-      alert("A Reserva de Emergência é um pilar do seu app e não pode ser excluída.");
-      return;
-    }
+  const excluirCofre = async (id: string) => {
     if (confirm("Tem certeza que deseja excluir este cofre?")) {
+      // 1. Otimismo: Tira da tela na hora
       setObjetivos(objetivos.filter(obj => obj.id !== id));
+
+      // 2. Manda deletar no banco
+      const { error } = await supabase
+        .from('cofres')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        console.error("Erro ao excluir cofre:", error);
+        buscarCofres(); // Se der erro na rede, desfaz a exclusão visual
+      }
     }
   };
 
-  const salvarEdicaoCofre = () => {
-    if (!cofreEditando || !cofreEditando.nome.trim()) return;
-    setObjetivos(objetivos.map(obj => 
-      obj.id === cofreEditando.id ? cofreEditando : obj
-    ));
-    setCofreEditando(null);
+  const salvarEdicaoCofre = async () => {
+    if (!cofreEditando || !cofreEditando.nome.trim() || !usuario) return;
+
+    // Faz o UPDATE no banco
+    const { error } = await supabase
+      .from('cofres')
+      .update({
+        nome: cofreEditando.nome,
+        valor_alvo: cofreEditando.valorAlvo // DTO: da tela para o banco
+      })
+      .eq('id', cofreEditando.id);
+
+    if (error) {
+      alert("Erro ao editar cofre: " + error.message);
+    } else {
+      buscarCofres();
+      setCofreEditando(null);
+    }
   };
 
-  const confirmarAporte = () => {
-    if (!modalAporteAberto) return;
+  const confirmarAporte = async () => {
+    if (!modalAporteAberto || !usuario) return;
     const val = parseFloat(valorAporte);
     if (isNaN(val) || val <= 0) return;
 
-    setObjetivos(objetivos.map(obj => {
-      if (obj.id === modalAporteAberto.cofreId) {
-        const novoValor = modalAporteAberto.tipo === "guardar" 
-          ? obj.valorGuardado + val 
-          : obj.valorGuardado - val;
-        // Impede que o cofre fique com valor negativo
-        return { ...obj, valorGuardado: Math.max(0, novoValor) };
-      }
-      return obj;
-    }));
+    // Acha o cofre atual na memória para saber quanto tem
+    const cofreAlvo = objetivos.find(o => o.id === modalAporteAberto.cofreId);
+    if (!cofreAlvo) return;
+
+    const novoValor = modalAporteAberto.tipo === "guardar" 
+      ? cofreAlvo.valorGuardado + val 
+      : cofreAlvo.valorGuardado - val;
+      
+    const valorFinal = Math.max(0, novoValor); // Impede que fique negativo
+
+    // 1. Atualização Otimista na tela
+    setObjetivos(objetivos.map(obj => 
+      obj.id === modalAporteAberto.cofreId ? { ...obj, valorGuardado: valorFinal } : obj
+    ));
     setModalAporteAberto(null);
     setValorAporte("");
+
+    // 2. Atualiza o saldo no banco de dados
+    const { error } = await supabase
+      .from('cofres')
+      .update({ valor_guardado: valorFinal })
+      .eq('id', modalAporteAberto.cofreId);
+
+    if (error) {
+      alert("Erro ao atualizar saldo: " + error.message);
+      buscarCofres(); // Corrige a tela se o update falhar
+    }
   };
 
   // ─── Funções de Categoria ──────────────────────────────────────────────────
@@ -815,6 +898,17 @@ Considere a renda informada para sugerir valores realistas. Inclua apenas catego
       categorias.some(cat => cat.id === sugestao.categoriaId)
     );
     setMetas(sugestoesValidas);
+    // Salva as metas no Supabase após gerar
+    if (usuario && sugestoesValidas.length > 0) {
+      await supabase.from('metas').delete().eq('user_id', usuario.id); // limpa as antigas
+      await supabase.from('metas').insert(
+        sugestoesValidas.map(m => ({
+          user_id: usuario.id,
+          categoria_id: m.categoriaId,
+          valor_limite: m.valorLimite,
+        }))
+      );
+    }
   } catch (e) {
     console.error("Erro ao gerar sugestões:", e);
   } finally {
@@ -1106,14 +1200,7 @@ Responda de forma amigável, direta e em português.`;
             </button>
           )}
         </div>
-
-        <button 
-          onClick={migrarDadosParaNuvem}
-          className="m-4 p-3 bg-amarelo text-fundo font-black rounded-lg text-xs animate-pulse"
-        >
-          MIGRAR DADOS LOCAIS PARA A NUVEM ☁️
-        </button>
-
+        
         {/* ── CONTEÚDO POR ABA ── */}
 
         {/* ABA: LANÇAMENTOS */}
@@ -1127,7 +1214,7 @@ Responda de forma amigável, direta e em português.`;
               
               {/* Atalho Elegante para Reserva */}
               <button 
-                onClick={() => setModalAporteAberto({ cofreId: "reserva-padrao", tipo: "guardar" })}
+                onClick={() => setModalAporteAberto({ cofreId: objetivos[0]?.id || "", tipo: "guardar" })}
                 className="mt-6 flex items-center gap-1.5 text-xs font-bold text-texto-sec hover:text-primaria transition-colors"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
