@@ -200,18 +200,73 @@ export default function FinanceiroBechelli() {
 
   // ─── Funções de Evento ─────────────────────────────────────────────────────
 
-  const criarEvento = () => {
-    if (!nomeNovoEvento.trim()) return;
-    const novo: Evento = { id: Date.now().toString(), nome: nomeNovoEvento.trim() };
-    setEventos([novo, ...eventos]);
-    setNomeNovoEvento("");
-    setModalEventoAberto(false);
+  const criarEvento = async () => {
+    if (!nomeNovoEvento.trim() || !usuario) return;
+
+    const { data, error } = await supabase
+      .from('eventos')
+      .insert([{ user_id: usuario.id, nome: nomeNovoEvento.trim() }])
+      .select();
+
+    if (error) {
+      alert("Erro ao criar evento: " + error.message);
+    } else {
+      buscarEventos();
+      setNomeNovoEvento("");
+      setModalEventoAberto(false);
+    }
   };
 
-  const excluirEvento = (id: string) => {
-    // Desvincula as transações do evento antes de excluir
-    setTransacoes(transacoes.map(t => t.eventoId === id ? { ...t, eventoId: undefined } : t));
-    setEventos(eventos.filter(e => e.id !== id));
+  const confirmarAgrupamento = async () => {
+    if (!nomeEventoAgrupamento.trim() || transacoesSelecionadas.size === 0 || !usuario) return;
+
+    // 1. Cria o evento primeiro
+    const { data: novoEvento, error: erroEvento } = await supabase
+      .from('eventos')
+      .insert([{ user_id: usuario.id, nome: nomeEventoAgrupamento.trim() }])
+      .select();
+
+    if (erroEvento || !novoEvento) {
+      alert("Erro ao criar grupo: " + erroEvento?.message);
+      return;
+    }
+
+    const idDoEvento = novoEvento[0].id;
+
+    // 2. Atualiza todas as transações selecionadas para este novo evento
+    const IDsParaAtualizar = Array.from(transacoesSelecionadas);
+    
+    const { error: erroTransacao } = await supabase
+      .from('transacoes')
+      .update({ evento_id: idDoEvento })
+      .in('id', IDsParaAtualizar);
+
+    if (erroTransacao) {
+      console.error("Erro ao vincular transações:", erroTransacao);
+    } else {
+      buscarEventos();
+      buscarTransacoes();
+      setTransacoesSelecionadas(new Set());
+      setNomeEventoAgrupamento("");
+      setModoAgrupar(false);
+    }
+  };
+
+  const excluirEvento = async (id: string) => {
+    if (!confirm("Ao excluir o evento, as transações continuarão existindo, mas ficarão avulsas. Confirmar?")) return;
+
+    // 1. Desvincula as transações no banco (FK para null)
+    await supabase.from('transacoes').update({ evento_id: null }).eq('evento_id', id);
+
+    // 2. Apaga o evento
+    const { error } = await supabase.from('eventos').delete().eq('id', id);
+
+    if (error) {
+      alert("Erro ao excluir: " + error.message);
+    } else {
+      buscarEventos();
+      buscarTransacoes();
+    }
   };
 
   const toggleExpandirEvento = (id: string) => {
@@ -220,19 +275,7 @@ export default function FinanceiroBechelli() {
       novo.has(id) ? novo.delete(id) : novo.add(id);
       return novo;
     });
-  };
-
-  const confirmarAgrupamento = () => {
-    if (!nomeEventoAgrupamento.trim() || transacoesSelecionadas.size === 0) return;
-    const novoEvento: Evento = { id: Date.now().toString(), nome: nomeEventoAgrupamento.trim() };
-    setEventos([novoEvento, ...eventos]);
-    setTransacoes(transacoes.map(t =>
-      transacoesSelecionadas.has(t.id) ? { ...t, eventoId: novoEvento.id } : t
-    ));
-    setTransacoesSelecionadas(new Set());
-    setNomeEventoAgrupamento("");
-    setModoAgrupar(false);
-  };
+  };  
 
   const toggleSelecionarTransacao = (id: string) => {
     setTransacoesSelecionadas(prev => {
@@ -356,6 +399,7 @@ export default function FinanceiroBechelli() {
       buscarTransacoes();
       buscarCofres();
       buscarMetas();
+      buscarEventos();
     }
   }, [usuario]);
 
@@ -587,6 +631,20 @@ export default function FinanceiroBechelli() {
     setUltimaExcluida(null);
   };
 
+  const buscarEventos = async () => {
+    if (!usuario) return;
+    const { data, error } = await supabase
+      .from('eventos')
+      .select('*')
+      .eq('user_id', usuario.id);
+
+    if (error) {
+      console.error("Erro ao buscar eventos:", error);
+    } else {
+      setEventos(data || []);
+    }
+  };
+
   const criarCofre = async () => {
     if (!nomeNovoCofre.trim() || !usuario) return;
     
@@ -614,6 +672,13 @@ export default function FinanceiroBechelli() {
   };
 
   const excluirCofre = async (id: string) => {
+    // 👇 A CORREÇÃO ESTÁ AQUI: Verifica pelo nome em vez do ID chumbado
+    const cofreAlvo = objetivos.find(obj => obj.id === id);
+    if (cofreAlvo?.nome === "Reserva de Emergência") {
+      alert("A Reserva de Emergência é um pilar do seu app e não pode ser excluída.");
+      return;
+    }
+
     if (confirm("Tem certeza que deseja excluir este cofre?")) {
       // 1. Otimismo: Tira da tela na hora
       setObjetivos(objetivos.filter(obj => obj.id !== id));
@@ -757,8 +822,11 @@ export default function FinanceiroBechelli() {
   ].sort((a, b) => {
     const repA = a.tipo === 'avulsa' ? a.transacao : a.representante;
     const repB = b.tipo === 'avulsa' ? b.transacao : b.representante;
-    if (criterio === 'data_desc') return repB.id.localeCompare(repA.id);
-    if (criterio === 'data_asc')  return repA.id.localeCompare(repB.id);
+    
+    // 👇 A CORREÇÃO ESTÁ AQUI: Usando .data em vez de .id.localeCompare
+    if (criterio === 'data_desc') return new Date(repB.data).getTime() - new Date(repA.data).getTime();
+    if (criterio === 'data_asc')  return new Date(repA.data).getTime() - new Date(repB.data).getTime();
+    
     if (criterio === 'valor_desc') {
       const valA = a.tipo === 'avulsa' ? a.transacao.valor : a.transacoes.reduce((s, t) => s + t.valor, 0);
       const valB = b.tipo === 'avulsa' ? b.transacao.valor : b.transacoes.reduce((s, t) => s + t.valor, 0);
