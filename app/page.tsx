@@ -366,13 +366,7 @@ export default function FinanceiroBechelli() {
 
   // ─── Efeitos ───────────────────────────────────────────────────────────────
 
-  useEffect(() => {    
-    const c = localStorage.getItem("minhas_categorias");
-    setCategorias(c ? JSON.parse(c) : CATEGORIAS_PADRAO);
-
-    const ev = localStorage.getItem("meus_eventos");
-    if (ev) setEventos(JSON.parse(ev));
-
+  useEffect(() => {
     const tema = localStorage.getItem("tema_preferido");
     if (tema) {
       setTemaAtivo(tema);
@@ -400,6 +394,7 @@ export default function FinanceiroBechelli() {
       buscarCofres();
       buscarMetas();
       buscarEventos();
+      buscarCategorias();
     }
   }, [usuario]);
 
@@ -416,6 +411,40 @@ export default function FinanceiroBechelli() {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  const buscarCategorias = async () => {
+    if (!usuario) return;
+
+    const { data, error } = await supabase
+      .from('categorias')
+      .select('*')
+      .eq('user_id', usuario.id)
+      .order('nome', { ascending: true });
+
+    if (error) {
+      console.error("Erro ao buscar categorias:", error);
+    } else {
+      if (data && data.length > 0) {
+        setCategorias(data);
+      } else {
+        // Se não houver nada no banco, sobe as categorias padrão
+        const iniciais = CATEGORIAS_PADRAO.map(cat => ({
+          user_id: usuario.id,
+          nome: cat.nome,
+          cor: cat.cor
+        }));
+        
+        const { data: novas } = await supabase
+          .from('categorias')
+          .insert(iniciais)
+          .select();
+          
+        if (novas) setCategorias(novas);
+      }
+    }
+  };
+
+  // ─── Autenticação ──────────────────────────────────────────────────────────
 
   const fazerLogin = async () => {
     setErroAuth("");
@@ -752,34 +781,62 @@ export default function FinanceiroBechelli() {
 
   // ─── Funções de Categoria ──────────────────────────────────────────────────
 
-  const adicionarCategoria = () => {
-    if (!novoNomeCategoria.trim()) return;
-    const nova: Categoria = { id: Date.now().toString(), nome: novoNomeCategoria.trim(), cor: novaCorCategoria };
-    const novaLista = [...categorias, nova];
-    
-    setCategorias(novaLista);
-    localStorage.setItem("minhas_categorias", JSON.stringify(novaLista)); // <-- Corrigido
-    
-    setNovoNomeCategoria("");
-    setNovaCorCategoria(CORES_DISPONIVEIS[0]);
+  const adicionarCategoria = async () => {
+    if (!novoNomeCategoria.trim() || !usuario) return;
+
+    const { error } = await supabase
+      .from('categorias')
+      .insert([{
+        user_id: usuario.id,
+        nome: novoNomeCategoria.trim(),
+        cor: novaCorCategoria
+      }]);
+
+    if (error) {
+      alert("Erro ao salvar categoria: " + error.message);
+    } else {
+      buscarCategorias();
+      setNovoNomeCategoria("");
+      setNovaCorCategoria(CORES_DISPONIVEIS[0]);
+    }
   };
 
-  const salvarEdicaoCategoria = () => {
-    if (!editandoCategoria || !editandoCategoria.nome.trim()) return;
-    const novaLista = categorias.map((c) => c.id === editandoCategoria.id ? editandoCategoria : c);
-    
-    setCategorias(novaLista);
-    localStorage.setItem("minhas_categorias", JSON.stringify(novaLista)); // <-- Corrigido
-    setEditandoCategoria(null);
+  const salvarEdicaoCategoria = async () => {
+    if (!editandoCategoria || !editandoCategoria.nome.trim() || !usuario) return;
+
+    const { error } = await supabase
+      .from('categorias')
+      .update({
+        nome: editandoCategoria.nome,
+        cor: editandoCategoria.cor
+      })
+      .eq('id', editandoCategoria.id);
+
+    if (error) {
+      alert("Erro ao editar: " + error.message);
+    } else {
+      buscarCategorias();
+      setEditandoCategoria(null);
+    }
   };
 
-  const excluirCategoria = (id: string) => {
+  const excluirCategoria = async (id: string) => {
+    // Mantemos o check para não quebrar as transações existentes
     const emUso = transacoes.some((t) => t.categoriaId === id);
     if (emUso) return alert("Essa categoria está sendo usada em uma transação.");
-    const novaLista = categorias.filter((c) => c.id !== id);
-    
-    setCategorias(novaLista);
-    localStorage.setItem("minhas_categorias", JSON.stringify(novaLista)); // <-- Corrigido
+
+    if (confirm("Tem certeza que deseja excluir esta categoria?")) {
+      const { error } = await supabase
+        .from('categorias')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        alert("Erro ao excluir: " + error.message);
+      } else {
+        buscarCategorias();
+      }
+    }
   };
 
   // ─── Dados Derivados ───────────────────────────────────────────────────────
