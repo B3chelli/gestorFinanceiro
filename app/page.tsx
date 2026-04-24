@@ -123,6 +123,9 @@ const PERGUNTAS_QUESTIONARIO = [
 
 export default function FinanceiroBechelli() {
 
+  const [listaCustosFixos, setListaCustosFixos] = useState<any[]>([]);
+  const [modalGerenciarCustosAberto, setModalGerenciarCustosAberto] = useState(false);
+
   // ─── Estados ───────────────────────────────────────────────────────────────
 
   const [transacoes,       setTransacoes]       = useState<Transacao[]>([]);
@@ -137,8 +140,8 @@ export default function FinanceiroBechelli() {
   const [abaAtiva,         setAbaAtiva]         = useState<Aba>("lancamentos");
   const [periodoRelatorio, setPeriodoRelatorio] = useState<"semanal" | "mensal" | "anual">("mensal");
   const [usuario,          setUsuario]          = useState<User | null>(null);
-  const [email,            setEmail]            = useState("");
-  const [senha,            setSenha]            = useState("");
+  const [email,            setEmail]            = useState(process.env.NEXT_PUBLIC_EMAIL_TESTE || "");
+  const [senha,            setSenha]            = useState(process.env.NEXT_PUBLIC_SENHA_TESTE || "");
   const [carregandoAuth,   setCarregandoAuth]   = useState(true);
   const [mensagemSucesso,  setMensagemSucesso]  = useState("");
   const [erroAuth,         setErroAuth]         = useState("");
@@ -199,6 +202,16 @@ export default function FinanceiroBechelli() {
   const [modalCofreAberto, setModalCofreAberto] = useState(false);
   const [nomeNovoCofre, setNomeNovoCofre] = useState("");
   const [valorAlvoNovoCofre, setValorAlvoNovoCofre] = useState("");
+
+  const [modalLogoutAberto, setModalLogoutAberto] = useState(false);
+
+  // Custos Fixos
+  const [modalCustoFixoAberto, setModalCustoFixoAberto] = useState(false);
+  const [cfDescricao, setCfDescricao] = useState("");
+  const [cfValor, setCfValor] = useState("");
+  const [cfCategoriaId, setCfCategoriaId] = useState(""); 
+  const [cfEventoId, setCfEventoId] = useState("nenhum");
+  const [cfDia, setCfDia] = useState<number>(5);
 
   // ─── Funções de Evento ─────────────────────────────────────────────────────
 
@@ -316,6 +329,57 @@ export default function FinanceiroBechelli() {
     setTransacaoEditando(null);
   };
 
+  // 1. O motor que verifica se tem algo pra cobrar hoje
+  const processarCustosFixos = async () => {
+    if (!usuario) return;
+    const { data: custos } = await supabase.from('custos_fixos').select('*').eq('user_id', usuario.id).eq('ativo', true);
+    if (!custos) return;
+
+    const hoje = new Date();
+    const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
+    const diaAtual = hoje.getDate();
+    let teveNovoLancamento = false;
+
+    for (const custo of custos) {
+      if (diaAtual >= custo.dia_vencimento && custo.ultimo_mes_lancado !== mesAtual) {
+        await supabase.from('transacoes').insert([{
+          user_id: usuario.id,
+          descricao: custo.descricao,
+          valor: custo.valor,
+          is_receita: false,
+          categoria: custo.categoria_id,
+          evento_id: custo.evento_id
+        }]);
+        await supabase.from('custos_fixos').update({ ultimo_mes_lancado: mesAtual }).eq('id', custo.id);
+        teveNovoLancamento = true;
+      }
+    }
+    if (teveNovoLancamento) buscarTransacoes(); // Atualiza a tela se gerou alguma despesa invisível
+  };
+
+  const salvarCustoFixo = async () => {
+    const val = parseFloat(cfValor);
+    if (!cfDescricao.trim() || isNaN(val) || val <= 0 || !usuario) return;
+
+    const { error } = await supabase.from('custos_fixos').insert([{
+      user_id: usuario.id,
+      descricao: cfDescricao.trim(),
+      valor: val,
+      categoria_id: cfCategoriaId || categorias[0]?.id,
+      evento_id: cfEventoId === "nenhum" ? null : cfEventoId,
+      dia_vencimento: cfDia,
+      ultimo_mes_lancado: null // Deixa nulo para ele avaliar se já deve lançar na próxima vez
+    }]);
+
+    if (error) {
+      alert("Erro ao salvar assinatura: " + error.message);
+    } else {
+      setModalCustoFixoAberto(false);
+      setCfDescricao(""); setCfValor(""); setCfDia(5); setCfEventoId("nenhum");
+      processarCustosFixos(); // Já testa se deve descontar hoje mesmo
+    }
+  };
+
   // ─── Adicionar transação dentro de um evento já existente ─────────────────
 
   const adicionarDentroDoEvento = async (eventoId: string) => {
@@ -397,6 +461,8 @@ export default function FinanceiroBechelli() {
       buscarMetas();
       buscarEventos();
       buscarCategorias();
+      processarCustosFixos();
+      buscarCustosFixos();
     }
   }, [usuario]);
 
@@ -570,6 +636,39 @@ export default function FinanceiroBechelli() {
       setMetas(metasFormatadas);
     }
   };
+
+  // ─── Custo Fixo ──────────────────────────────────────────────────────────
+
+  const buscarCustosFixos = async () => {
+    if (!usuario) return;
+    const { data, error } = await supabase
+      .from('custos_fixos')
+      .select('*')
+      .eq('user_id', usuario.id)
+      .order('dia_vencimento', { ascending: true });
+
+    if (error) console.error("Erro ao buscar custos fixos:", error);
+    else setListaCustosFixos(data || []);
+  };
+
+  const excluirCustoFixo = async (id: string) => {
+    if (!confirm("Deseja remover esta automação? Os lançamentos já feitos continuarão no seu histórico.")) return;
+    
+    const { error } = await supabase.from('custos_fixos').delete().eq('id', id);
+    
+    if (error) alert("Erro ao excluir: " + error.message);
+    else buscarCustosFixos();
+  };
+
+  const toggleCustoFixo = async (id: string, ativoAtual: boolean) => {
+    const { error } = await supabase
+      .from('custos_fixos')
+      .update({ ativo: !ativoAtual })
+      .eq('id', id);
+    
+    if (error) alert("Erro ao atualizar status: " + error.message);
+    else buscarCustosFixos();
+  };
   
   // ─── Funções de Negócio ────────────────────────────────────────────────────
 
@@ -705,7 +804,7 @@ export default function FinanceiroBechelli() {
   };
 
   const excluirCofre = async (id: string) => {
-    // 👇 A CORREÇÃO ESTÁ AQUI: Verifica pelo nome em vez do ID chumbado
+    // Verifica pelo nome em vez do ID chumbado
     const cofreAlvo = objetivos.find(obj => obj.id === id);
     if (cofreAlvo?.nome === "Reserva de Emergência") {
       alert("A Reserva de Emergência é um pilar do seu app e não pode ser excluída.");
@@ -1263,7 +1362,7 @@ Responda de forma amigável, direta e em português.`;
     <div className="min-h-screen bg-fundo font-sans transition-colors duration-500 pb-20">
       <div className="max-w-2xl mx-auto">
 
-        {/* ── CABEÇALHO (sempre visível) ── */}
+        {/* ── CABEÇALHO ── */}
         <div className="bg-card border-b border-borda px-4 md:px-6 py-4 flex justify-between items-center gap-2">
           <div className="flex items-center gap-2 md:gap-4 min-w-0">
             <h1 className="text-sm md:text-2xl font-bold text-primaria whitespace-nowrap hidden sm:block">Financeiro Bechelli</h1>
@@ -1344,7 +1443,15 @@ Responda de forma amigável, direta e em português.`;
             </div>
           )}
 
-          {/* ── NOVO BOTÃO DE RESET AQUI ── */}
+          {/* Botão Sair */}
+          <button 
+            onClick={() => setModalLogoutAberto(true)}
+            className="p-1.5 md:p-2 rounded-lg border border-erro/30 hover:bg-erro/10 text-erro transition-all active:scale-95" 
+            title="Sair da Conta">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+
+          {/* ── Botão de reset ── */}
           {abaAtiva === "metas" && (
             <button
               onClick={resetarPerfil}
@@ -1358,8 +1465,6 @@ Responda de forma amigável, direta e em português.`;
             </button>
           )}
         </div>
-        
-        {/* ── CONTEÚDO POR ABA ── */}
 
         {/* ABA: LANÇAMENTOS */}
         {abaAtiva === "lancamentos" && (
@@ -1370,7 +1475,7 @@ Responda de forma amigável, direta e em português.`;
               <p className="text-texto-sec text-xs font-bold uppercase tracking-widest mb-1">Saldo Livre</p>
               <h2 className="text-4xl md:text-5xl font-black text-texto">R$ {saldo.toFixed(2)}</h2>
               
-              {/* Atalho Elegante para Reserva */}
+              {/* Atalho para Reserva */}
               <button 
                 onClick={() => setModalAporteAberto({ cofreId: objetivos[0]?.id || "", tipo: "guardar" })}
                 className="mt-6 flex items-center gap-1.5 text-xs font-bold text-texto-sec hover:text-primaria transition-colors"
@@ -1419,11 +1524,22 @@ Responda de forma amigável, direta e em português.`;
               <button onClick={adicionar}
                 className={`w-full font-black py-4 px-4 rounded-lg transition-all border-2 ${temaAtivo === "cyber" ? "bg-destaque text-black border-destaque hover:brightness-110 active:scale-95" : "bg-card text-primaria border-primaria hover:bg-primaria hover:text-fundo active:scale-95"}`}>
                 ADICIONAR TRANSAÇÃO
-              </button>
+              </button>              
             </div>
 
+            <button onClick={() => { setCfCategoriaId(categorias[0]?.id); setModalCustoFixoAberto(true); }}
+              className="w-full mt-2 py-3 rounded-lg border border-primaria/30 text-primaria font-bold text-sm hover:bg-primaria/10 transition-all flex items-center justify-center gap-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+              Automatizar Assinatura / Custo Fixo
+            </button>
+
+            <button onClick={() => { buscarCustosFixos(); setModalGerenciarCustosAberto(true); }}
+              className="text-xs font-bold text-texto-sec hover:text-primaria transition-colors underline">
+              Ver/Cancelar Agendamentos
+            </button>
+
             {/* Lista */}
-            <ul className="divide-y divide-borda max-h-[400px] overflow-y-auto bg-fundo custom-scrollbar">
+            <ul className="divide-y divide-borda bg-fundo">
               {listaUnificada.length === 0 ? (
                 <li className="p-10 text-center text-texto-sec text-sm italic">Nenhuma transação registrada.</li>
               ) : (
@@ -1662,7 +1778,7 @@ Responda de forma amigável, direta e em português.`;
               <p className="text-center text-texto-sec text-sm italic py-6">Nenhuma despesa registrada ainda.</p>
             )}
 
-            {/* Gráfico de Linha — evolução do saldo */}
+            {/* Gráfico de Linha */}
             <div>
               <p className="text-[10px] font-bold text-texto-sec uppercase tracking-widest mb-3">Evolução do Saldo (30 dias)</p>
               <ResponsiveContainer width="100%" height={180}>
@@ -1895,7 +2011,7 @@ Responda de forma amigável, direta e em português.`;
 
       </div>
 
-      {/* ── BARRA DE ABAS (RODAPÉ FIXO) ── */}
+      {/* ── BARRA DE ABAS ── */}
       <div className="fixed bottom-0 left-0 right-0 z-40 bg-card border-t border-borda shadow-2xl">
         <div className="max-w-2xl mx-auto flex">
           {([
@@ -1916,7 +2032,7 @@ Responda de forma amigável, direta e em português.`;
         </div>
       </div>
 
-      {/* ── MODAIS E OVERLAYS (fora do fluxo de abas) ── */}
+      {/* ── MODAIS E OVERLAYS ── */}
 
       {/* Modal Categorias */}
       {modalCategoriasAberto && (
@@ -2291,6 +2407,109 @@ Responda de forma amigável, direta e em português.`;
             <div className="flex gap-3 mt-2">
               <button onClick={salvarEdicaoCofre} disabled={!cofreEditando.nome.trim()} className="flex-1 py-3 font-bold bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">Salvar</button>
               <button onClick={() => setCofreEditando(null)} className="flex-1 py-3 font-bold bg-fundo text-texto-sec border border-borda rounded-lg hover:border-primaria/50 transition-all active:scale-95">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Logout */}
+      {modalLogoutAberto && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => { if (e.target === e.currentTarget) setModalLogoutAberto(false); }}>
+          <div className="bg-card border border-borda rounded-2xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4 text-center">
+            <div className="mx-auto w-14 h-14 bg-erro/10 text-erro rounded-full flex items-center justify-center mb-2">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-texto">Sair da conta?</h2>
+              <p className="text-sm text-texto-sec mt-1">Você precisará fazer login novamente para acessar seus dados financeiros.</p>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <button onClick={fazerLogout} className="flex-1 py-3 font-bold bg-erro text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95">Sim, sair</button>
+              <button onClick={() => setModalLogoutAberto(false)} className="flex-1 py-3 font-bold bg-fundo text-texto-sec border border-borda rounded-lg hover:border-primaria/50 transition-all active:scale-95">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Custo Fixo */}
+      {modalCustoFixoAberto && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => { if (e.target === e.currentTarget) setModalCustoFixoAberto(false); }}>
+          <div className="bg-card border border-borda rounded-xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4">
+            <h2 className="text-lg font-bold text-primaria">Novo Custo Mensal</h2>
+            
+            <div className="flex gap-3">
+              <input type="number" className="w-1/3 p-3 bg-fundo text-texto border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                placeholder="Dia (1-31)" value={cfDia} onChange={e => setCfDia(parseInt(e.target.value) || 1)} max={31} min={1} />
+              <input type="number" className="flex-1 p-3 bg-fundo text-texto border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+                placeholder="Valor (R$)" value={cfValor} onChange={e => setCfValor(e.target.value)} />
+            </div>
+            
+            <input className="w-full p-3 bg-fundo text-texto border border-primaria/50 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-destaque"
+              placeholder="Descrição (ex: Netflix)" value={cfDescricao} onChange={e => setCfDescricao(e.target.value)} />
+
+            <div>
+              <p className="text-xs text-texto-sec uppercase font-bold mb-2">Categoria</p>
+              <select value={cfCategoriaId} onChange={e => setCfCategoriaId(e.target.value)} className="w-full p-3 bg-fundo text-texto border border-primaria/50 rounded-lg text-sm focus:outline-none">
+                {categorias.map(cat => <option key={cat.id} value={cat.id}>{cat.nome}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <p className="text-xs text-texto-sec uppercase font-bold mb-2">Vincular a um Evento? (Opcional)</p>
+              <select value={cfEventoId} onChange={e => setCfEventoId(e.target.value)} className="w-full p-3 bg-fundo text-texto border border-primaria/50 rounded-lg text-sm focus:outline-none">
+                <option value="nenhum">Nenhum evento</option>
+                {eventos.map(ev => <option key={ev.id} value={ev.id}>{ev.nome}</option>)}
+              </select>
+            </div>
+
+            <div className="flex gap-3 mt-2">
+              <button onClick={salvarCustoFixo} className="flex-1 py-3 font-bold bg-primaria text-fundo rounded-lg hover:brightness-110 transition-all active:scale-95">Salvar Automação</button>
+              <button onClick={() => setModalCustoFixoAberto(false)} className="flex-1 py-3 font-bold bg-fundo text-texto-sec border border-borda rounded-lg transition-all active:scale-95">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Gerenciar Custos Fixos */}
+      {modalGerenciarCustosAberto && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => { if (e.target === e.currentTarget) setModalGerenciarCustosAberto(false); }}>
+          <div className="bg-card border border-borda rounded-xl shadow-2xl w-full max-w-md flex flex-col max-h-[80vh]">
+            <div className="p-5 border-b border-borda flex justify-between items-center">
+              <h2 className="text-lg font-bold text-primaria">Automações Ativas</h2>
+              <button onClick={() => setModalGerenciarCustosAberto(false)} className="text-texto-sec hover:text-erro transition-colors">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-4 space-y-3 custom-scrollbar">
+              {listaCustosFixos.length === 0 ? (
+                <p className="text-center text-sm text-texto-sec py-10 italic">Nenhum custo fixo automatizado.</p>
+              ) : (
+                listaCustosFixos.map((cf) => (
+                  <div key={cf.id} className={`p-4 rounded-xl border transition-all ${cf.ativo ? 'bg-fundo border-borda' : 'bg-fundo/40 border-dashed border-borda opacity-60'}`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <p className="font-bold text-texto">{cf.descricao}</p>
+                        <p className="text-[10px] text-texto-sec uppercase font-bold">Todo dia {cf.dia_vencimento}</p>
+                      </div>
+                      <span className="font-black text-erro">R$ {parseFloat(cf.valor).toFixed(2)}</span>
+                    </div>
+                    
+                    <div className="flex gap-4 mt-3 pt-3 border-t border-borda/50">
+                      <button 
+                        onClick={() => toggleCustoFixo(cf.id, cf.ativo)}
+                        className={`text-xs font-bold transition-colors ${cf.ativo ? 'text-destaque' : 'text-sucesso'}`}>
+                        {cf.ativo ? "Pausar" : "Reativar"}
+                      </button>
+                      <button 
+                        onClick={() => excluirCustoFixo(cf.id)}
+                        className="text-xs font-bold text-erro/70 hover:text-erro transition-colors">
+                        Excluir Automação
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
